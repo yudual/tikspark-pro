@@ -104,7 +104,10 @@ def dispatch_active_messages(
         for index, friend in enumerate(active_friends):
             task = tasks_by_friend_id.get(friend.id)
             if is_auto_cron and not settings.manual_review_mode and index > 0:
-                _wait_between_auto_tasks()
+                _wait_between_auto_tasks(
+                    settings.dispatch_jitter_min_seconds,
+                    settings.dispatch_jitter_max_seconds,
+                )
 
             _mark_current_friend(friend)
             if task:
@@ -177,8 +180,8 @@ def _create_tasks_for_friends(
     return tasks
 
 
-def _wait_between_auto_tasks() -> None:
-    jitter_seconds = random.randint(60, 300)
+def _wait_between_auto_tasks(min_seconds: int, max_seconds: int) -> None:
+    jitter_seconds = random.randint(max(1, min_seconds), max(min_seconds, max_seconds))
     for remaining in range(jitter_seconds, 0, -1):
         global_state.mode = "jitter_wait"
         global_state.current_step = "错峰等待"
@@ -284,6 +287,20 @@ def _mark_friend_run(friend: Friend, current_time: datetime, result_status: RunS
     if not friend.is_active:
         friend.next_run_at = None
         friend.consecutive_failures = 0
+        return
+
+    if friend.account.status == AccountStatus.invalid:
+        # 账号凭证失效：不安排重试，等账号修复后由扫描重新生成计划。
+        friend.next_run_at = None
+        return
+
+    if result_status == RunStatus.manual_review:
+        # 人工复核：没有真正发送，不推进正常计划，短冷却后再检查一次。
+        friend.consecutive_failures = 0
+        friend.next_run_at = compute_retry_run_at(
+            now=current_time,
+            retry_cooldown_minutes=friend.retry_cooldown_minutes,
+        )
         return
 
     if result_status == RunStatus.failed:

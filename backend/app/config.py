@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     manual_review_mode: bool = False
     default_schedule_window: str = "06:00-08:00"
     admin_token: str = ""
+    dispatch_jitter_min_seconds: int = 60
+    dispatch_jitter_max_seconds: int = 300
 
     model_config = SettingsConfigDict(
         env_prefix="TIKSPARK_",
