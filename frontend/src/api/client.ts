@@ -12,6 +12,7 @@ import type {
   RunLogResponse,
   RunStatus,
   SchedulePreviewResponse,
+  SystemSettingsResponse,
   SystemStatusResponse,
 } from "../types";
 
@@ -221,6 +222,9 @@ export const api = {
         message_content: messageContent,
       }),
     });
+  },
+  getSystemSettings() {
+    return request<SystemSettingsResponse>("/api/system/settings");
   },
 };
 

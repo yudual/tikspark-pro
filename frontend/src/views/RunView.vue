@@ -1,13 +1,118 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 
 import { api } from "../api/client";
-import type { Account, DispatchSource, DispatchTask, RunStatus } from "../types";
+import type { Account, DispatchSource, DispatchTask, Friend, RunStatus } from "../types";
+
+type FriendOption = Friend & {
+  account_name: string;
+};
+
+const accounts = ref<Account[]>([]);
+const friends = ref<FriendOption[]>([]);
+const loading = ref(false);
+const friendLoading = ref(false);
+const running = ref(false);
+const selectedAccountId = ref<number | null>(null);
+const selectedFriendId = ref<number | null>(null);
+
+const selectedAccount = computed(() =>
+  accounts.value.find((account) => account.id === selectedAccountId.value) ?? null,
+);
+
+const selectedFriend = computed(() =>
+  friends.value.find((friend) => friend.id === selectedFriendId.value) ?? null,
+);
+
+const friendPlaceholder = computed(() =>
+  selectedAccountId.value ? "当前账号的全部启用好友" : "全部账号的全部启用好友",
+);
+
+const runTargetText = computed(() => {
+  if (selectedFriend.value) {
+    return `${selectedFriend.value.account_name} -> ${selectedFriend.value.friend_nickname}`;
+  }
+  if (selectedAccount.value) {
+    return `${selectedAccount.value.nickname} 的全部启用好友`;
+  }
+  return "全部账号的全部启用好友";
+});
+
+async function loadAccounts() {
+  loading.value = true;
+  try {
+    accounts.value = await api.listAccounts();
+    await loadFriends(selectedAccountId.value);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载账号失败");
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function loadFriends(accountId: number | null) {
+  selectedFriendId.value = null;
+  friends.value = [];
+  friendLoading.value = true;
+  try {
+    const targetAccounts = accountId
+      ? accounts.value.filter((account) => account.id === accountId)
+      : accounts.value;
+    const friendGroups = await Promise.all(
+      targetAccounts.map(async (account) => {
+        const items = await api.listFriends(account.id);
+        return items
+          .filter((friend) => friend.is_active)
+          .map((friend) => ({ ...friend, account_name: account.nickname }));
+      }),
+    );
+    friends.value = friendGroups.flat();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载好友失败");
+  } finally {
+    friendLoading.value = false;
+  }
+}
+
+async function onAccountChange(value: number | null) {
+  selectedAccountId.value = value;
+  await loadFriends(value);
+}
+
+async function runManualTask() {
+  try {
+    await ElMessageBox.confirm(
+      `确认立即执行：${runTargetText.value}？`,
+      "手动执行确认",
+      {
+        type: "warning",
+        confirmButtonText: "确认执行",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+
+  running.value = true;
+  try {
+    await api.runTasks(
+      selectedAccountId.value ?? undefined,
+      selectedFriendId.value ?? undefined,
+      false,
+    );
+    ElMessage.success("已创建执行任务，任务会显示在下方列表");
+    await loadTasks();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "手动执行失败");
+  } finally {
+    running.value = false;
+  }
+}
 
 const tasks = ref<DispatchTask[]>([]);
-const accounts = ref<Account[]>([]);
-const loading = ref(false);
+const loadingTasks = ref(false);
 const totalTasks = ref(0);
 const currentPage = ref(1);
 const pageSize = ref(20);
@@ -41,16 +146,8 @@ const taskStats = computed(() => {
   };
 });
 
-async function loadAccounts() {
-  try {
-    accounts.value = await api.listAccounts();
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "加载账号失败");
-  }
-}
-
 async function loadTasks() {
-  loading.value = true;
+  loadingTasks.value = true;
   try {
     const res = await api.listTasks(
       currentPage.value,
@@ -64,13 +161,8 @@ async function loadTasks() {
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "加载任务失败");
   } finally {
-    loading.value = false;
+    loadingTasks.value = false;
   }
-}
-
-async function manualRefresh() {
-  await loadTasks();
-  ElMessage.success("任务列表已刷新");
 }
 
 function resetFilters() {
@@ -119,6 +211,64 @@ onMounted(() => {
 
 <template>
   <div class="view-grid">
+    <section class="panel-card manual-run-card" v-loading="loading">
+      <div class="section-head">
+        <div>
+          <h2>手动执行</h2>
+          <p class="section-subtitle">选择执行范围后立即触发，任务会出现在下方任务列表中。</p>
+        </div>
+      </div>
+
+      <div class="manual-run-grid">
+        <label class="strategy-field">
+          <span class="meta">执行账号</span>
+          <el-select
+            :model-value="selectedAccountId"
+            clearable
+            placeholder="全部账号"
+            @update:model-value="onAccountChange"
+          >
+            <el-option label="全部账号" :value="null" />
+            <el-option
+              v-for="account in accounts"
+              :key="account.id"
+              :label="account.nickname"
+              :value="account.id"
+            />
+          </el-select>
+        </label>
+
+        <label class="strategy-field">
+          <span class="meta">执行好友</span>
+          <el-select
+            v-model="selectedFriendId"
+            :loading="friendLoading"
+            clearable
+            filterable
+            :placeholder="friendPlaceholder"
+          >
+            <el-option label="全部启用好友" :value="null" />
+            <el-option
+              v-for="friend in friends"
+              :key="friend.id"
+              :label="`${friend.account_name} / ${friend.friend_nickname}`"
+              :value="friend.id"
+            />
+          </el-select>
+        </label>
+      </div>
+
+      <div class="manual-run-preview">
+        <span class="meta">即将执行</span>
+        <strong>{{ runTargetText }}</strong>
+      </div>
+
+      <div class="manual-run-actions">
+        <el-button type="success" :loading="running" @click="runManualTask">立即执行</el-button>
+        <el-button plain :loading="loading" @click="loadAccounts">刷新账号</el-button>
+      </div>
+    </section>
+
     <section class="metrics-grid">
       <article class="metric-card">
         <p class="metric-label">当前页任务</p>
@@ -141,7 +291,7 @@ onMounted(() => {
     <section class="panel-card">
       <div class="section-head task-section-head">
         <div>
-          <h2>调度任务中心</h2>
+          <h2>任务列表</h2>
           <p class="section-subtitle">查看手动触发和自动计划生成的任务状态。</p>
         </div>
         <div class="task-filters">
@@ -171,11 +321,11 @@ onMounted(() => {
             />
           </el-select>
           <el-button plain @click="resetFilters">重置</el-button>
-          <el-button plain :loading="loading" @click="manualRefresh">刷新</el-button>
+          <el-button plain :loading="loadingTasks" @click="loadTasks">刷新</el-button>
         </div>
       </div>
 
-      <el-table :data="tasks" stripe v-loading="loading" class="task-table">
+      <el-table :data="tasks" stripe v-loading="loadingTasks" class="task-table">
         <el-table-column label="时间" width="170">
           <template #default="{ row }">
             {{ formatDateTime(row.created_at) }}
@@ -266,10 +416,6 @@ onMounted(() => {
           <span class="meta">详情</span>
           <p>{{ selectedTask.details || "-" }}</p>
         </div>
-        <div>
-          <span class="meta">幂等键</span>
-          <code>{{ selectedTask.idempotency_key }}</code>
-        </div>
       </div>
     </el-drawer>
   </div>
@@ -333,12 +479,6 @@ onMounted(() => {
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.task-detail code {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--muted);
 }
 
 @media (max-width: 980px) {

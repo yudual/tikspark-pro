@@ -10,14 +10,14 @@ const router = createRouter({
       meta: { title: "运行看板" },
     },
     {
-      path: "/engine-status",
-      component: () => import("./views/EngineStatusView.vue"),
-      meta: { title: "调度引擎状态" },
+      path: "/run",
+      component: () => import("./views/RunView.vue"),
+      meta: { title: "执行与任务" },
     },
     {
-      path: "/auto-schedule",
-      component: () => import("./views/AutoScheduleView.vue"),
-      meta: { title: "自动续火花计划" },
+      path: "/logs",
+      component: () => import("./views/LogsView.vue"),
+      meta: { title: "运行日志" },
     },
     {
       path: "/accounts",
@@ -30,19 +30,14 @@ const router = createRouter({
       meta: { title: "消息配置" },
     },
     {
-      path: "/manual-run",
-      component: () => import("./views/ManualRunView.vue"),
-      meta: { title: "手动执行" },
+      path: "/auto-schedule",
+      component: () => import("./views/AutoScheduleView.vue"),
+      meta: { title: "自动计划" },
     },
     {
-      path: "/tasks",
-      component: () => import("./views/TasksView.vue"),
-      meta: { title: "任务中心" },
-    },
-    {
-      path: "/logs",
-      component: () => import("./views/LogsView.vue"),
-      meta: { title: "任务日志" },
+      path: "/settings",
+      component: () => import("./views/SettingsView.vue"),
+      meta: { title: "系统设置" },
     },
   ],
 });

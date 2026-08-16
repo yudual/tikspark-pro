@@ -18,8 +18,6 @@ const updatingEnabled = ref(false);
 const regenerating = ref(false);
 const previewAccountId = ref<number | null>(null);
 const expandedTaskIds = ref<Set<number>>(new Set());
-const savingStrategies = reactive<Record<number, boolean>>({});
-const strategyDrafts = reactive<Record<number, FriendStrategyUpdate>>({});
 const batchSaving = ref(false);
 const batchStrategy = reactive<FriendStrategyUpdate>({
   account_id: null,
@@ -94,25 +92,21 @@ function buildTimeline(item: AutoScheduleItem) {
   });
 }
 
-function createStrategyDraft(item: AutoScheduleItem): FriendStrategyUpdate {
+function createBatchDraft(): FriendStrategyUpdate {
+  const first = autoSchedule.value?.items?.[0];
+  if (!first) return { ...batchStrategy };
   return {
-    account_id: item.account_id,
-    schedule_window: item.schedule_window,
-    frequency_days: item.frequency_days,
-    cooldown_minutes: item.cooldown_minutes,
-    retry_limit: item.retry_limit,
-    retry_cooldown_minutes: item.retry_cooldown_minutes,
+    account_id: null,
+    schedule_window: first.schedule_window,
+    frequency_days: first.frequency_days,
+    cooldown_minutes: first.cooldown_minutes,
+    retry_limit: first.retry_limit,
+    retry_cooldown_minutes: first.retry_cooldown_minutes,
   };
 }
 
-function syncDrafts() {
-  for (const item of autoSchedule.value?.items ?? []) {
-    strategyDrafts[item.friend_id] = createStrategyDraft(item);
-  }
-  if ((autoSchedule.value?.items.length ?? 0) > 0) {
-    Object.assign(batchStrategy, createStrategyDraft(autoSchedule.value!.items[0]));
-    batchStrategy.account_id = null;
-  }
+function syncBatchDraft() {
+  Object.assign(batchStrategy, createBatchDraft());
 }
 
 function getBatchAccountOptions() {
@@ -158,7 +152,7 @@ async function loadAutoSchedule(showLoading = false) {
     ]);
     autoSchedule.value = scheduleData;
     schedulePreview.value = previewData;
-    syncDrafts();
+    syncBatchDraft();
     loadError.value = "";
     hasShownLoadError = false;
   } catch (error) {
@@ -182,7 +176,7 @@ async function toggleAutoSchedule(value: boolean) {
   updatingEnabled.value = true;
   try {
     autoSchedule.value = await api.updateAutoScheduleSettings(value);
-    syncDrafts();
+    syncBatchDraft();
     ElMessage.success(value ? "自动续火花计划已开启" : "自动续火花计划已暂停");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "更新自动开关失败");
@@ -215,28 +209,12 @@ function validateStrategy(strategy: FriendStrategyUpdate) {
   return true;
 }
 
-async function saveStrategy(friendId: number) {
-  const draft = strategyDrafts[friendId];
-  if (!draft || !validateStrategy(draft)) return;
-
-  savingStrategies[friendId] = true;
-  try {
-    await api.updateFriendStrategy(friendId, draft);
-    await loadAutoSchedule();
-    ElMessage.success("自动策略已更新");
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "更新自动策略失败");
-  } finally {
-    savingStrategies[friendId] = false;
-  }
-}
-
 async function saveBatchStrategy() {
   if (!validateStrategy(batchStrategy)) return;
   batchSaving.value = true;
   try {
     autoSchedule.value = await api.batchUpdateAutoScheduleStrategy(batchStrategy);
-    syncDrafts();
+    syncBatchDraft();
     await loadAutoSchedule();
     ElMessage.success(`已批量应用到 ${getBatchTargetLabel()}`);
   } catch (error) {
@@ -264,7 +242,7 @@ async function regenerateSchedule(onlyOverdue: boolean) {
   regenerating.value = true;
   try {
     autoSchedule.value = await api.regenerateAutoSchedule(onlyOverdue);
-    syncDrafts();
+    syncBatchDraft();
     await loadAutoSchedule();
     ElMessage.success(onlyOverdue ? "过期计划已重新生成" : "全部计划已重新生成");
   } catch (error) {
@@ -537,38 +515,6 @@ onUnmounted(() => {
                 <strong>{{ item.last_result_summary || "暂无最近执行结果" }}</strong>
                 <p class="meta">{{ item.last_result_details || "当前还没有最近一次执行明细。" }}</p>
               </div>
-            </div>
-
-            <div class="schedule-side">
-              <div class="strategy-grid per-item">
-                <label class="strategy-field">
-                  <span class="meta">续火时段</span>
-                  <el-input v-model="strategyDrafts[item.friend_id].schedule_window" placeholder="06:00-08:00" />
-                </label>
-                <label class="strategy-field">
-                  <span class="meta">间隔天数</span>
-                  <el-input-number v-model="strategyDrafts[item.friend_id].frequency_days" :min="1" :max="30" />
-                </label>
-                <label class="strategy-field">
-                  <span class="meta">冷却分钟</span>
-                  <el-input-number v-model="strategyDrafts[item.friend_id].cooldown_minutes" :min="0" :max="1440" />
-                </label>
-                <label class="strategy-field">
-                  <span class="meta">失败重试次数</span>
-                  <el-input-number v-model="strategyDrafts[item.friend_id].retry_limit" :min="0" :max="10" />
-                </label>
-                <label class="strategy-field">
-                  <span class="meta">重试间隔分钟</span>
-                  <el-input-number v-model="strategyDrafts[item.friend_id].retry_cooldown_minutes" :min="1" :max="1440" />
-                </label>
-              </div>
-              <el-button
-                plain
-                :loading="savingStrategies[item.friend_id]"
-                @click="saveStrategy(item.friend_id)"
-              >
-                保存这条策略
-              </el-button>
             </div>
           </div>
         </article>

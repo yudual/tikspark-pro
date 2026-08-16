@@ -7,10 +7,9 @@ import {
   DataAnalysis,
   Document,
   Key,
-  List,
-  VideoPlay,
-  Timer,
+  Setting,
   User,
+  VideoPlay,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
@@ -19,24 +18,36 @@ import { api, clearAdminToken, getAdminToken, setAdminToken } from "./api/client
 const route = useRoute();
 const router = useRouter();
 
+const navGroups = [
+  {
+    label: "工作台",
+    items: [
+      { label: "运行看板", path: "/dashboard", icon: DataAnalysis },
+      { label: "执行与任务", path: "/run", icon: VideoPlay },
+      { label: "运行日志", path: "/logs", icon: Document },
+    ],
+  },
+  {
+    label: "配置",
+    items: [
+      { label: "账号管理", path: "/accounts", icon: User },
+      { label: "消息配置", path: "/messages", icon: ChatLineSquare },
+      { label: "自动计划", path: "/auto-schedule", icon: Calendar },
+    ],
+  },
+  {
+    label: "系统",
+    items: [{ label: "系统设置", path: "/settings", icon: Setting }],
+  },
+];
+
+const pageTitle = computed(() => (route.meta.title as string) ?? "TikSpark Pro");
+
 const tokenDialogVisible = ref(false);
 const tokenDraft = ref(getAdminToken());
 const savedToken = ref(getAdminToken());
 const tokenSaving = ref(false);
 const hasToken = computed(() => Boolean(savedToken.value));
-
-const navItems = [
-  { label: "运行看板", path: "/dashboard", icon: DataAnalysis },
-  { label: "调度引擎状态", path: "/engine-status", icon: Timer },
-  { label: "自动续火花计划", path: "/auto-schedule", icon: Calendar },
-  { label: "账号管理", path: "/accounts", icon: User },
-  { label: "消息配置", path: "/messages", icon: ChatLineSquare },
-  { label: "手动执行", path: "/manual-run", icon: VideoPlay },
-  { label: "任务中心", path: "/tasks", icon: List },
-  { label: "任务日志", path: "/logs", icon: Document },
-];
-
-const pageTitle = computed(() => (route.meta.title as string) ?? "TikSpark Pro");
 
 async function saveToken() {
   const token = tokenDraft.value.trim();
@@ -87,16 +98,19 @@ function logoutToken() {
         </div>
 
         <nav class="nav">
-          <button
-            v-for="item in navItems"
-            :key="item.path"
-            class="nav-item"
-            :class="{ active: route.path === item.path }"
-            @click="router.push(item.path)"
-          >
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-          </button>
+          <template v-for="group in navGroups" :key="group.label">
+            <div class="nav-group-label">{{ group.label }}</div>
+            <button
+              v-for="item in group.items"
+              :key="item.path"
+              class="nav-item"
+              :class="{ active: route.path === item.path }"
+              @click="router.push(item.path)"
+            >
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
+            </button>
+          </template>
         </nav>
       </div>
 

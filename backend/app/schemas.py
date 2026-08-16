@@ -254,3 +254,16 @@ class DashboardSummary(BaseModel):
     configured_message_total: int
     manual_review_job_total: int
     latest_logs: list[RunLogResponse]
+
+
+class SystemSettingsResponse(BaseModel):
+    app_name: str
+    api_prefix: str
+    admin_token_configured: bool
+    scheduler_enabled: bool
+    scheduler_scan_interval_seconds: int
+    manual_review_mode: bool
+    sqlite_path: str
+    secret_key_path: str
+    cors_origins: list[str]
+    default_schedule_window: str

@@ -208,3 +208,16 @@ export interface DashboardSummary {
   manual_review_job_total: number;
   latest_logs: RunLog[];
 }
+
+export interface SystemSettingsResponse {
+  app_name: string;
+  api_prefix: string;
+  admin_token_configured: boolean;
+  scheduler_enabled: boolean;
+  scheduler_scan_interval_seconds: number;
+  manual_review_mode: boolean;
+  sqlite_path: string;
+  secret_key_path: string;
+  cors_origins: string[];
+  default_schedule_window: string;
+}
