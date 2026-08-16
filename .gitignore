@@ -1,0 +1,13 @@
+.venv/
+**/__pycache__/
+.vscode/
+chrome/
+logs/
+.DS_Store
+usersData.json
+.env
+frontend/node_modules/
+frontend/dist/
+backend/data/
+backups/
+legacy/

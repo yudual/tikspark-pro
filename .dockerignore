@@ -1,0 +1,14 @@
+.git
+.venv
+.venv_old_from_d
+__pycache__
+*.pyc
+*.pyo
+*.log
+runtime-logs
+frontend/node_modules
+frontend/dist
+backend/data
+backend/data/*.db-journal
+backend/data/*.db-wal
+backend/data/*.db-shm

@@ -1,0 +1,16 @@
+services:
+  tikspark-api:
+    build: .
+    container_name: tikspark_api
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    environment:
+      - TIKSPARK_SQLITE_PATH=/app/backend/data/tikspark.db
+      - TIKSPARK_SECRET_KEY_PATH=/app/backend/data/secret.key
+      - TIKSPARK_SCHEDULER_ENABLED=false
+      # Change this before exposing the app. Use the same value in the web UI.
+      - TIKSPARK_ADMIN_TOKEN=change-this-token
+      - TIKSPARK_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]
+    volumes:
+      - ./backend/data:/app/backend/data
