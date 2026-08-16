@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Account, AccountStatus, Friend, Message, MessageType
+from ..time_utils import beijing_now, from_beijing_epoch
 from .secret_service import get_secret_service
 
 
@@ -73,7 +74,7 @@ class CredentialService:
         account_candidate = sync_result.account_candidate
         friends = self._without_account_candidate(sync_result.friends, account_candidate)
         cookie_expires_at = self.extract_cookie_expires_at(cookie_text)
-        now = datetime.utcnow()
+        now = beijing_now()
 
         # 最终清洗：如果 display_id 依然是那串长字符，且我们有昵称，就干脆把它设为空或者更短的形式
         final_display_id = (
@@ -126,7 +127,7 @@ class CredentialService:
         elif parsed.dy_id and not account.dy_id:
             account.dy_id = parsed.dy_id
 
-        now = datetime.utcnow()
+        now = beijing_now()
         account.cookie_text = get_secret_service().encrypt(cookie_text)
         account.cookie_expires_at = self.extract_cookie_expires_at(cookie_text)
         account.cookie_updated_at = now
@@ -156,7 +157,7 @@ class CredentialService:
             if not isinstance(expires, (int, float)) or expires <= 0:
                 continue
             try:
-                expires_values.append(datetime.utcfromtimestamp(float(expires)))
+                expires_values.append(from_beijing_epoch(float(expires)))
             except (OverflowError, OSError, ValueError):
                 continue
 
@@ -188,7 +189,7 @@ class CredentialService:
             if friends
             else sync_result.status_reason
         )
-        account.last_checked_at = datetime.utcnow()
+        account.last_checked_at = beijing_now()
         return self._sync_friends_to_db(db, account, friends)
 
     def _extract_from_cookie(self, cookie_text: str) -> SyncResult:
@@ -440,7 +441,7 @@ class CredentialService:
                     friend_dy_id=item.display_id,
                     friend_nickname=item.nickname or item.display_id,
                     friend_avatar=item.avatar_url,
-                    last_synced_at=datetime.utcnow(),
+                    last_synced_at=beijing_now(),
                 )
                 db.add(existing)
                 db.flush()
@@ -454,7 +455,7 @@ class CredentialService:
             else:
                 existing.friend_nickname = item.nickname or existing.friend_nickname
                 existing.friend_avatar = item.avatar_url or existing.friend_avatar
-                existing.last_synced_at = datetime.utcnow()
+                existing.last_synced_at = beijing_now()
             synced.append(existing)
 
         return synced

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
+from .time_utils import beijing_now
 
 
 class AccountStatus(str, Enum):
@@ -42,9 +43,9 @@ class AppSetting(Base):
 
 
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=beijing_now, onupdate=beijing_now
     )
 
 
@@ -122,10 +123,7 @@ class RunLog(Base):
     status: Mapped[RunStatus] = mapped_column(SqlEnum(RunStatus), default=RunStatus.pending)
     summary: Mapped[str] = mapped_column(String(255), default="")
     details: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=lambda: datetime.utcnow() + timedelta(hours=8),
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
 
     friend: Mapped[Friend] = relationship(back_populates="run_logs")
 
@@ -144,11 +142,11 @@ class DispatchTask(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     summary: Mapped[str] = mapped_column(String(255), default="")
     details: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow() + timedelta(hours=8))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=lambda: datetime.utcnow() + timedelta(hours=8),
-        onupdate=lambda: datetime.utcnow() + timedelta(hours=8),
+        default=beijing_now,
+        onupdate=beijing_now,
     )
 
     friend: Mapped[Friend] = relationship(back_populates="dispatch_tasks")
@@ -159,5 +157,5 @@ class DispatchLock(Base):
 
     name: Mapped[str] = mapped_column(String(80), primary_key=True)
     owner: Mapped[str] = mapped_column(String(120), default="")
-    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.utcnow() + timedelta(hours=8))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime, default=beijing_now)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)

@@ -82,7 +82,7 @@ def ensure_sqlite_schema() -> None:
             )
 
     if "run_logs" not in table_names or "app_settings" not in table_names:
-        _encrypt_plaintext_cookies()
+        _finish_migrations()
         return
 
     with engine.begin() as connection:
@@ -90,7 +90,7 @@ def ensure_sqlite_schema() -> None:
             text("SELECT value FROM app_settings WHERE key = 'run_logs_timezone_migrated_v1'")
         ).scalar_one_or_none()
         if migrated == "done":
-            _encrypt_plaintext_cookies()
+            _finish_migrations()
             return
 
         connection.execute(
@@ -106,7 +106,12 @@ def ensure_sqlite_schema() -> None:
                 "ON CONFLICT(key) DO UPDATE SET value = 'done'"
             )
         )
+    _finish_migrations()
+
+
+def _finish_migrations() -> None:
     _encrypt_plaintext_cookies()
+    _migrate_utc_timestamps_to_beijing()
 
 
 def _encrypt_plaintext_cookies() -> None:
@@ -128,6 +133,50 @@ def _encrypt_plaintext_cookies() -> None:
                 text("UPDATE accounts SET cookie_text = :cookie_text WHERE id = :id"),
                 {"id": row["id"], "cookie_text": secret_service.encrypt(cookie_text)},
             )
+
+
+TIMESTAMPS_UNIFIED_KEY = "timestamps_unified_v1"
+
+
+def _migrate_utc_timestamps_to_beijing() -> None:
+    """把历史 UTC naive 时间戳迁移为北京时间 naive。
+
+    项目统一约定：数据库所有时间字段为北京时间（UTC+8）naive。
+    本次迁移只影响 accounts / friends / messages 的 created_at / updated_at。
+    """
+    inspector = inspect(engine)
+    if "app_settings" not in inspector.get_table_names():
+        return
+
+    with engine.begin() as connection:
+        migrated = connection.execute(
+            text("SELECT value FROM app_settings WHERE key = :key"),
+            {"key": TIMESTAMPS_UNIFIED_KEY},
+        ).scalar_one_or_none()
+        if migrated == "done":
+            return
+
+        for table in ("accounts", "friends", "messages"):
+            if table not in inspector.get_table_names():
+                continue
+            columns = {column["name"] for column in inspector.get_columns(table)}
+            for column in ("created_at", "updated_at"):
+                if column not in columns:
+                    continue
+                connection.execute(
+                    text(
+                        f"UPDATE {table} SET {column} = datetime({column}, '+8 hours') "
+                        f"WHERE {column} IS NOT NULL"
+                    )
+                )
+
+        connection.execute(
+            text(
+                "INSERT INTO app_settings(key, value) VALUES (:key, 'done') "
+                "ON CONFLICT(key) DO UPDATE SET value = 'done'"
+            ),
+            {"key": TIMESTAMPS_UNIFIED_KEY},
+        )
 
 
 def _ensure_dispatch_tables(table_names: list[str]) -> None:
