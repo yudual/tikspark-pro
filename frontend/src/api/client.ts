@@ -82,21 +82,21 @@ export const api = {
     return request<DashboardSummary>("/api/dashboard/summary");
   },
   getAutoSchedule() {
-    return request<AutoScheduleSummary>("/api/dashboard/auto-schedule");
+    return request<AutoScheduleSummary>("/api/schedule");
   },
   getAutoSchedulePreview(days: number = 7, accountId?: number | null) {
     const params = new URLSearchParams({ days: days.toString() });
     if (accountId != null) params.append("account_id", accountId.toString());
-    return request<SchedulePreviewResponse>(`/api/dashboard/auto-schedule/preview?${params.toString()}`);
+    return request<SchedulePreviewResponse>(`/api/schedule/preview?${params.toString()}`);
   },
   updateAutoScheduleSettings(enabled: boolean) {
-    return request<AutoScheduleSummary>("/api/dashboard/auto-schedule/settings", {
+    return request<AutoScheduleSummary>("/api/schedule/settings", {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     });
   },
   regenerateAutoSchedule(onlyOverdue = true, accountId?: number | null) {
-    return request<AutoScheduleSummary>("/api/dashboard/auto-schedule/regenerate", {
+    return request<AutoScheduleSummary>("/api/schedule/regenerate", {
       method: "POST",
       body: JSON.stringify({
         account_id: accountId ?? null,
@@ -105,13 +105,13 @@ export const api = {
     });
   },
   batchUpdateAutoScheduleStrategy(strategy: FriendStrategyUpdate) {
-    return request<AutoScheduleSummary>("/api/dashboard/auto-schedule/batch-strategy", {
+    return request<AutoScheduleSummary>("/api/schedule/batch-strategy", {
       method: "PATCH",
       body: JSON.stringify(strategy),
     });
   },
   listLogs(page: number = 1, limit: number = 50, accountId?: number) {
-    let url = `/api/dashboard/logs?page=${page}&limit=${limit}`;
+    let url = `/api/logs?page=${page}&limit=${limit}`;
     if (accountId) {
       url += `&account_id=${accountId}`;
     }
@@ -131,10 +131,10 @@ export const api = {
     if (accountId) params.append("account_id", accountId.toString());
     if (status) params.append("status", status);
     if (source) params.append("source", source);
-    return request<PaginatedTasksResponse>(`/api/dashboard/tasks?${params.toString()}`);
+    return request<PaginatedTasksResponse>(`/api/run/tasks?${params.toString()}`);
   },
   runTasks(accountId?: number, friendId?: number, isAutoCron: boolean = false) {
-    let url = "/api/dashboard/run-tasks";
+    let url = "/api/run/tasks";
     const params = new URLSearchParams();
     if (accountId) params.append("account_id", accountId.toString());
     if (friendId) params.append("friend_id", friendId.toString());

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .config import get_settings
 from .database import Base, engine, ensure_sqlite_schema
-from .routers import accounts, dashboard, messages, system
+from .routers import accounts, dashboard, logs, messages, run, schedule, system
 from .services.scheduler import build_scheduler
 
 if sys.platform == "win32":
@@ -68,6 +68,9 @@ app.include_router(dashboard.router, prefix=settings.api_prefix)
 app.include_router(accounts.router, prefix=settings.api_prefix)
 app.include_router(messages.router, prefix=settings.api_prefix)
 app.include_router(system.router, prefix=settings.api_prefix)
+app.include_router(run.router, prefix=settings.api_prefix)
+app.include_router(logs.router, prefix=settings.api_prefix)
+app.include_router(schedule.router, prefix=settings.api_prefix)
 
 
 @app.get("/{full_path:path}", include_in_schema=False)
