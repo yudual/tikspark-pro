@@ -2,8 +2,11 @@
 import { onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
+import AccountSelect from "../components/AccountSelect.vue";
+import RunStatusTag from "../components/RunStatusTag.vue";
 import { api } from "../api/client";
 import type { RunLogResponse, Account } from "../types";
+import { formatDateTime } from "../utils/format";
 
 const logs = ref<RunLogResponse[]>([]);
 const loading = ref(false);
@@ -44,20 +47,6 @@ watch([currentPage, pageSize, filterAccountId], () => {
   loadLogs();
 });
 
-function statusType(status: string) {
-  if (status === "success") return "success";
-  if (status === "failed") return "danger";
-  if (status === "manual_review") return "warning";
-  return "info";
-}
-
-function statusLabel(status: string) {
-  if (status === "success") return "执行成功";
-  if (status === "failed") return "执行失败";
-  if (status === "manual_review") return "人工复核";
-  return status;
-}
-
 onMounted(() => {
   loadAccounts();
   loadLogs();
@@ -69,19 +58,17 @@ onMounted(() => {
     <section class="panel-card">
       <div class="section-head">
         <div>
-          <h2>任务运行日志</h2>
-          <p class="section-subtitle">展示任务的调度与执行详情，支持按账号筛选。</p>
+          <h2>运行日志</h2>
+          <p class="section-subtitle">展示每次执行的历史结果，支持按账号筛选。</p>
         </div>
         <div style="display: flex; gap: 12px; align-items: center">
-          <el-select v-model="filterAccountId" placeholder="全部账号" clearable style="width: 200px">
-            <el-option label="-- 全部账号 --" :value="null" />
-            <el-option
-              v-for="acc in accounts"
-              :key="acc.id"
-              :label="acc.nickname"
-              :value="acc.id"
-            />
-          </el-select>
+          <AccountSelect
+            :accounts="accounts"
+            :model-value="filterAccountId"
+            placeholder="全部账号"
+            style="width: 200px"
+            @update:model-value="filterAccountId = $event"
+          />
           <el-button plain :loading="loading" @click="manualRefresh">刷新日志</el-button>
         </div>
       </div>
@@ -89,18 +76,17 @@ onMounted(() => {
       <el-table :data="logs" stripe v-loading="loading" style="margin-bottom: 20px">
         <el-table-column label="执行时间" width="180">
           <template #default="{ row }">
-            {{ new Date(row.created_at).toLocaleString() }}
+            {{ formatDateTime(row.created_at) }}
           </template>
         </el-table-column>
 
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <RunStatusTag :status="row.status" />
           </template>
         </el-table-column>
 
         <el-table-column label="概要" property="summary" width="200" />
-        
         <el-table-column label="详细详情" property="details" min-width="300" />
       </el-table>
 

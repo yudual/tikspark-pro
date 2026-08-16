@@ -467,17 +467,6 @@ textarea {
   gap: 14px;
 }
 
-.dashboard-quick-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 14px;
-}
-
-.dashboard-quick-card {
-  min-height: 0;
-  padding: 18px;
-}
-
 .compact-head {
   align-items: flex-start;
   margin-bottom: 12px;
@@ -489,31 +478,6 @@ textarea {
 
 .compact-head .section-subtitle {
   font-size: 13px;
-}
-
-.quick-facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.quick-facts > div {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
-  padding: 10px;
-  min-width: 0;
-}
-
-.quick-facts span,
-.quick-facts strong {
-  display: block;
-}
-
-.quick-facts strong {
-  margin-top: 4px;
-  font-size: 15px;
-  overflow-wrap: anywhere;
 }
 
 .dashboard-actions {
@@ -539,10 +503,64 @@ textarea {
   margin: 5px 0 0;
 }
 
-.engine-card {
-  background:
-    linear-gradient(135deg, rgba(15, 118, 110, 0.08), transparent 42%),
-    var(--surface);
+.engine-strip-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.engine-strip-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.engine-strip-main .engine-step {
+  min-width: 0;
+}
+
+.engine-step span,
+.engine-step strong {
+  display: block;
+}
+
+.engine-step strong {
+  margin-top: 4px;
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.engine-strip-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.engine-strip-facts > div {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px;
+  min-width: 0;
+}
+
+.engine-strip-facts span,
+.engine-strip-facts strong {
+  display: block;
+}
+
+.engine-strip-facts strong {
+  margin-top: 4px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.engine-strip-card .dashboard-actions {
+  grid-column: 1 / -1;
+  margin-top: 0;
+  justify-content: flex-end;
 }
 
 .engine-badge {
@@ -554,6 +572,7 @@ textarea {
   background: #f1f5f9;
   color: var(--text);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .engine-badge.sending,
@@ -581,15 +600,6 @@ textarea {
   box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.12);
 }
 
-.engine-grid {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) repeat(3, minmax(120px, 160px));
-  gap: 14px;
-  margin-bottom: 14px;
-}
-
-.engine-primary,
-.engine-stat,
 .status-detail-grid > div,
 .auto-plan-strip > div {
   border: 1px solid var(--border);
@@ -598,19 +608,6 @@ textarea {
   padding: 14px;
 }
 
-.engine-primary strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 20px;
-}
-
-.engine-stat {
-  display: grid;
-  align-content: center;
-  gap: 8px;
-}
-
-.engine-stat strong,
 .auto-plan-strip strong,
 .status-detail-grid strong {
   font-size: 18px;
@@ -622,23 +619,10 @@ textarea {
   gap: 12px;
 }
 
-.engine-detail-grid {
-  margin-bottom: 12px;
-}
-
 .status-detail-grid span,
 .auto-plan-strip span {
   display: block;
   margin-bottom: 6px;
-}
-
-.engine-error {
-  margin-top: 14px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: #fef2f2;
-  color: var(--danger);
-  border: 1px solid rgba(220, 38, 38, 0.18);
 }
 
 .auto-schedule-card {
@@ -834,10 +818,6 @@ textarea {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
-}
-
-.strategy-grid.per-item {
-  grid-template-columns: 1fr;
 }
 
 .strategy-field {
@@ -1080,12 +1060,6 @@ textarea {
   width: 138px;
 }
 
-.schedule-side {
-  display: grid;
-  gap: 12px;
-  align-content: start;
-}
-
 .schedule-time {
   text-align: right;
 }
@@ -1099,24 +1073,17 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dashboard-quick-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .engine-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (max-width: 920px) {
-  .dashboard-quick-grid {
+  .engine-strip-card {
     grid-template-columns: 1fr;
+  }
+
+  .engine-strip-card .dashboard-actions {
+    justify-content: flex-start;
   }
 }
 
 @media (max-width: 720px) {
-  .engine-grid,
-  .quick-facts {
+  .engine-strip-facts {
     grid-template-columns: 1fr;
   }
 

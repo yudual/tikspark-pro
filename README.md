@@ -1,66 +1,66 @@
-# DouYin Spark Flow
+# TikSpark Pro
 
-![cover](docs/images/cover.png)
+抖音多账号火花自动维护面板：Cookie 托管、好友管理、消息配置、自动续火计划与浏览器自动化发送。
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
-![Playwright](https://img.shields.io/badge/Playwright-%E2%9C%94-green?logo=playwright)
-![chrome-headless-shell](https://img.shields.io/badge/chrome--headless--shell-%E2%9C%94-brightgreen?logo=googlechrome)
+> 本项目经历了一次重构：旧 Flask 版已归档到 `legacy/`，当前运行版本为 FastAPI + Vue3。
+> 结构与约定见 [ARCHITECTURE.md](ARCHITECTURE.md)，重构过程见 [REFACTOR_PLAN.md](REFACTOR_PLAN.md)。
 
-## 贡献者
+## 功能
 
-感谢所有为本项目做出贡献的开发者：
+- 账号管理：Cookie 导入/更新（自动解析账号和好友）、状态与过期时间、代理配置
+- 消息配置：固定文本 / 随机话术库 / 批量应用
+- 自动计划：续火时段、间隔天数、冷却、失败重试，7 天预览
+- 执行与任务：手动触发（按账号/好友）、任务队列、执行历史
+- 浏览器自动化：Playwright 模拟人工发送，防风控错峰
+- 管理员令牌保护 API，Cookie 加密存储
 
-[![contributors](https://contrib.rocks/image?repo=2061360308/DouYinSparkFlow)](https://github.com/2061360308/DouYinSparkFlow/graphs/contributors)
+## 本地运行
 
-## 📌 项目介绍
+```bash
+# 1. 后端依赖
+python -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt
 
-**抖音火花自动续火脚本**一款轻量实用的抖音互动脚本，可自动为你和抖音好友续火花，无需手动操作。
+# 2. 前端构建（Vue3 + Vite）
+cd frontend
+npm ci
+npm run build
+cd ..
 
-✅ 支持 GitHub Actions 自动运行（开箱即用的 Workflow 配置）
+# 3. 启动（默认关闭自动调度）
+TIKSPARK_ADMIN_TOKEN=change-me TIKSPARK_SCHEDULER_ENABLED=false \
+  .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8010
+```
 
-✅ 也可源码部署至自有服务器，青龙/白虎等任务管理面板，灵活适配个人使用场景
+访问 `http://127.0.0.1:8010`，右上角填入与服务器相同的管理员令牌。
 
-### 特性/优势
+## 环境变量
 
-- [x] 在线可视化配置工具，新手也能入门操作
-- [x] Fork即用，无需克隆代码，配置运行环境
-- [x] 多用户,同时批量支持多个账户
-- [x] 多目标,一个账户支持多个续火花目标
-- [x] 支持按照昵称和抖音号两种方式查找好友目标
-- [x] 一言支持,更丰富的消息文本
+见 [.env.example](.env.example)。常用：
 
-使用`PlayWright`以及`chrome-headless-shell`自动化操作[抖音创作者中心](https://creator.douyin.com/)，进行定时发送抖音消息来续火花
+| 变量 | 说明 | 默认 |
+|------|------|------|
+| `TIKSPARK_ADMIN_TOKEN` | API 访问令牌（必改） | 空 |
+| `TIKSPARK_SCHEDULER_ENABLED` | 是否启动调度进程 | true |
+| `TIKSPARK_SCHEDULER_SCAN_INTERVAL_SECONDS` | 扫描间隔秒 | 60 |
+| `TIKSPARK_MANUAL_REVIEW_MODE` | 人工复核模式（只记录不发送） | false |
+| `TIKSPARK_SQLITE_PATH` | 数据库路径 | backend/data/tikspark.db |
+| `TIKSPARK_SECRET_KEY_PATH` | Cookie 加密密钥路径 | backend/data/secret.key |
 
-## 🚀 使用方法
+> 数据库和密钥必须一起备份，否则已保存的 Cookie 无法解密。
 
-**材料准备：** 一个 GitHub 账号和可用浏览器即可，不设额外门槛。
+## 测试与检查
 
-**编辑项目配置：** 保姆级教程见 [配置生成器使用](docs/配置生成器使用.md)
+```bash
+python -m compileall -q backend
+python -m unittest discover -s backend/tests -v
+cd frontend && npm run build
+```
 
-**部署方法：**
+## 部署
 
-1. Github Action 部署（推荐👍），操作说明见 [Action部署说明](docs/Action部署说明.md)
+云服务器部署（单容器单端口 8010）见 [DEPLOY_1PANEL.md](DEPLOY_1PANEL.md)。
 
-2. 源码部署 （更适合高级用户），操作说明见[源代码部署说明](docs/源代码部署说明.md)
+## 免责声明
 
-## 📢交流讨论
-
-已开放讨论区，有疑问或展示相关成果，发布话题需求的可以加入讨论
-
-[跳转讨论区](https://github.com/2061360308/DouYinSparkFlow/discussions)
-
-## ⭐Star 趋势
-
-[![Star History Chart](https://api.star-history.com/svg?repos=2061360308/DouYinSparkFlow&type=Date)](https://www.star-history.com/#2061360308/DouYinSparkFlow&Date)
-
-## ⚠️ 免责声明
-
-1. 本项目为**开源学习用途**，仅用于技术研究和个人自用，严禁用于商业用途、恶意刷量或违反抖音平台规则的行为。
-2. 使用本脚本产生的一切风险（包括但不限于抖音账号限流、封禁、处罚等）均由使用者自行承担，项目开发者不承担任何责任。
-3. 本项目仅调用公开的接口/模拟人工操作，不涉及破解、入侵抖音系统，使用者需遵守《抖音用户服务协议》及相关法律法规。
-4. 请合理控制脚本运行频率，避免给抖音平台服务器造成压力，建议仅用于个人少量好友的火花维系。
-5. 若你使用本项目即表示已阅读并同意本免责声明，如不同意请立即停止使用。
-
-## 📄 开源协议
-
-本项目基于 MIT 协议开源，你可以自由使用、修改和分发本项目代码，详见 [LICENSE](LICENSE) 文件。
+本项目仅供个人学习与少量关系维护使用。请遵守抖音平台规则，自行评估账号风险。

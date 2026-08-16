@@ -2,8 +2,11 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 
+import AccountSelect from "../components/AccountSelect.vue";
+import RunStatusTag from "../components/RunStatusTag.vue";
 import { api } from "../api/client";
 import type { Account, DispatchSource, DispatchTask, Friend, RunStatus } from "../types";
+import { formatDateTime } from "../utils/format";
 
 type FriendOption = Friend & {
   account_name: string;
@@ -177,24 +180,6 @@ function openDetail(task: DispatchTask) {
   detailVisible.value = true;
 }
 
-function formatDateTime(value: string | null) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString();
-}
-
-function statusType(status: RunStatus) {
-  if (status === "success") return "success";
-  if (status === "failed") return "danger";
-  if (status === "manual_review") return "warning";
-  if (status === "running") return "primary";
-  if (status === "skipped") return "info";
-  return "";
-}
-
-function statusLabel(status: RunStatus) {
-  return statusOptions.find((option) => option.value === status)?.label ?? status;
-}
-
 function sourceLabel(source: DispatchSource) {
   return sourceOptions.find((option) => option.value === source)?.label ?? source;
 }
@@ -222,20 +207,12 @@ onMounted(() => {
       <div class="manual-run-grid">
         <label class="strategy-field">
           <span class="meta">执行账号</span>
-          <el-select
+          <AccountSelect
+            :accounts="accounts"
             :model-value="selectedAccountId"
-            clearable
             placeholder="全部账号"
             @update:model-value="onAccountChange"
-          >
-            <el-option label="全部账号" :value="null" />
-            <el-option
-              v-for="account in accounts"
-              :key="account.id"
-              :label="account.nickname"
-              :value="account.id"
-            />
-          </el-select>
+          />
         </label>
 
         <label class="strategy-field">
@@ -295,15 +272,12 @@ onMounted(() => {
           <p class="section-subtitle">查看手动触发和自动计划生成的任务状态。</p>
         </div>
         <div class="task-filters">
-          <el-select v-model="filterAccountId" placeholder="全部账号" clearable>
-            <el-option label="全部账号" :value="null" />
-            <el-option
-              v-for="acc in accounts"
-              :key="acc.id"
-              :label="acc.nickname"
-              :value="acc.id"
-            />
-          </el-select>
+          <AccountSelect
+            :accounts="accounts"
+            :model-value="filterAccountId"
+            placeholder="全部账号"
+            @update:model-value="filterAccountId = $event"
+          />
           <el-select v-model="filterStatus" placeholder="全部状态" clearable>
             <el-option
               v-for="option in statusOptions"
@@ -343,7 +317,7 @@ onMounted(() => {
 
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <RunStatusTag :status="row.status" />
           </template>
         </el-table-column>
 
@@ -382,7 +356,7 @@ onMounted(() => {
       <div v-if="selectedTask" class="task-detail">
         <div>
           <span class="meta">状态</span>
-          <el-tag :type="statusType(selectedTask.status)">{{ statusLabel(selectedTask.status) }}</el-tag>
+          <RunStatusTag :status="selectedTask.status" />
         </div>
         <div>
           <span class="meta">来源</span>
