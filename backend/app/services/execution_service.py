@@ -9,6 +9,14 @@ from playwright.sync_api import Locator, Page, sync_playwright
 from ..models import Account, Friend
 from .secret_service import get_secret_service
 
+LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密码登录")
+DISMISS_BUTTON_TEXTS = ("取消", "暂不", "知道了", "关闭", "稍后再说", "继续逛逛")
+DIALOG_SELECTORS = (".semi-modal-content", '[role="dialog"]', ".semi-toast")
+INPUT_SELECTORS = ('div[contenteditable="true"]', '[role="textbox"]', "textarea", ".chat-input")
+SEARCH_SELECTORS = ('input[placeholder*="搜索"]', 'input[placeholder*="查找"]', 'input[type="search"]')
+FRIEND_FIND_DEADLINE_SECONDS = 25
+INPUT_WAIT_DEADLINE_SECONDS = 12
+
 
 class ExecutionResult(NamedTuple):
     success: bool
@@ -56,61 +64,28 @@ class ExecutionService:
             try:
                 # 1. 访问消息页面
                 page.goto("https://www.douyin.com/chat", timeout=60000, wait_until="domcontentloaded")
-                time.sleep(random.uniform(3, 5))
+                time.sleep(random.uniform(2, 4))
 
-                # 2. 寻找好友
-                # 抖音网页版的好友列表搜索通常需要点击搜索框或直接在侧边栏滚动查找
-                # 这里我们采用“搜索框精准匹配” + “列表兜底”策略
-                
+                # 1.5 关闭非登录弹窗（如“是否保存登录信息”），避免遮挡列表和输入框
+                self._dismiss_dialogs(page)
+
+                # 2. 寻找好友（轮询等待列表加载 + 搜索 + 滚动，三重策略）
                 target_name = friend.friend_nickname
                 target_dy_id = friend.friend_dy_id
 
-                # 尝试通过侧边栏点击
-                friend_selector = f"text='{target_name}'"
-                friend_item = page.locator(friend_selector).first
-                
-                if not friend_item.is_visible():
-                    # 尝试用 dy_id (短号) 搜索
-                    try:
-                        search_box = page.locator('input[placeholder*="搜索"]').first
-                        if search_box.is_visible():
-                            search_box.click()
-                            page.keyboard.type(target_dy_id, delay=100)
-                            page.keyboard.press("Enter")
-                            time.sleep(2)
-                            # 搜索结果中的第一项
-                            friend_item = page.locator(f"text='{target_name}'").first
-                    except:
-                        pass
-
-                if not friend_item.is_visible():
-                    # 最后的兜底：滚动列表
-                    for _ in range(5):
-                        page.mouse.wheel(0, 500)
-                        time.sleep(0.5)
-                        if friend_item.is_visible(): break
-
-                if not friend_item.is_visible():
-                    return ExecutionResult(False, "未找到好友", f"在列表中未找到 {target_name} ({target_dy_id})")
+                friend_item = self._find_friend(page, target_name, target_dy_id)
+                if friend_item is None:
+                    return ExecutionResult(
+                        False,
+                        "未找到好友",
+                        f"在列表中未找到 {target_name} ({target_dy_id})",
+                    )
 
                 friend_item.click()
                 time.sleep(random.uniform(1.5, 3.0))
 
                 # 3. 输入消息 (拟人化输入)
-                input_selectors = [
-                    'div[contenteditable="true"]',
-                    'textarea',
-                    '[role="textbox"]',
-                    '.chat-input'
-                ]
-                
-                input_box = None
-                for selector in input_selectors:
-                    loc = page.locator(selector).first
-                    if loc.is_visible():
-                        input_box = loc
-                        break
-                
+                input_box = self._find_input_box(page)
                 if not input_box:
                     return ExecutionResult(False, "未找到输入框", "无法定位到聊天输入框")
 
@@ -139,6 +114,117 @@ class ExecutionService:
                 return ExecutionResult(False, "执行异常", str(e))
             finally:
                 browser.close()
+
+    def _dismiss_dialogs(self, page: Page) -> None:
+        """关闭非登录弹窗，绝不触碰登录弹窗。"""
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            dismissed = False
+            for selector in DIALOG_SELECTORS:
+                for dialog in page.locator(selector).all():
+                    try:
+                        if not dialog.is_visible():
+                            continue
+                        text = (dialog.inner_text(timeout=1000) or "").replace("\n", " ")
+                        if any(marker in text for marker in LOGIN_DIALOG_MARKERS):
+                            continue
+                        clicked = False
+                        for button_text in DISMISS_BUTTON_TEXTS:
+                            button = dialog.get_by_text(button_text, exact=True).first
+                            if button.count() and button.is_visible():
+                                button.click(timeout=2000)
+                                clicked = True
+                                dismissed = True
+                                break
+                        if not clicked:
+                            close = dialog.locator('[aria-label="Close"], .semi-modal-close').first
+                            if close.count() and close.is_visible():
+                                close.click(timeout=2000)
+                                dismissed = True
+                    except Exception:
+                        continue
+            if not dismissed:
+                return
+            time.sleep(0.6)
+
+    def _find_visible_match(self, page: Page, text: str) -> Locator | None:
+        try:
+            for candidate in page.get_by_text(text, exact=True).all():
+                if candidate.is_visible():
+                    return candidate
+        except Exception:
+            pass
+        try:
+            for candidate in page.locator(f"text='{text}'").all():
+                if candidate.is_visible():
+                    return candidate
+        except Exception:
+            pass
+        return None
+
+    def _try_search(self, page: Page, query: str) -> None:
+        for selector in SEARCH_SELECTORS:
+            box = page.locator(selector).first
+            try:
+                if box.count() and box.is_visible():
+                    box.click(timeout=2000)
+                    box.fill(query)
+                    page.keyboard.press("Enter")
+                    time.sleep(1.5)
+                    return
+            except Exception:
+                continue
+
+    def _scroll_friend_list(self, page: Page) -> None:
+        try:
+            page.mouse.move(400, 400)
+            page.mouse.wheel(0, 600)
+        except Exception:
+            pass
+
+    def _find_friend(self, page: Page, name: str, dy_id: str) -> Locator | None:
+        deadline = time.time() + FRIEND_FIND_DEADLINE_SECONDS
+        searched = False
+        scrolled_rounds = 0
+        while time.time() < deadline:
+            match = self._find_visible_match(page, name)
+            if match:
+                return match
+
+            if not searched:
+                self._try_search(page, dy_id or name)
+                searched = True
+                continue
+
+            if scrolled_rounds < 12:
+                self._scroll_friend_list(page)
+                scrolled_rounds += 1
+                time.sleep(0.6)
+                continue
+
+            # 搜索和滚动都用过，最后一轮重新加载页面兜底
+            try:
+                page.reload(wait_until="domcontentloaded")
+                time.sleep(3)
+                self._dismiss_dialogs(page)
+                searched = False
+                scrolled_rounds = 0
+            except Exception:
+                return None
+        return None
+
+    def _find_input_box(self, page: Page) -> Locator | None:
+        deadline = time.time() + INPUT_WAIT_DEADLINE_SECONDS
+        while time.time() < deadline:
+            for selector in INPUT_SELECTORS:
+                loc = page.locator(selector).first
+                try:
+                    if loc.count() and loc.is_visible():
+                        return loc
+                except Exception:
+                    continue
+            time.sleep(0.8)
+        return None
 
     def _verify_message_sent(self, page: Page, input_box: Locator, content: str) -> tuple[bool, str]:
         normalized_content = content.strip()
