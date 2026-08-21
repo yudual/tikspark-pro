@@ -125,7 +125,7 @@ backend/app/
   routers/           # 按资源拆分：dashboard / accounts / messages / run / logs / schedule / system
   services/          # 业务服务：
     credential_service.py   # Cookie 解析 + 账号/好友嗅探
-    execution_service.py    # Playwright 浏览器发送
+     execution_service.py    # Playwright 浏览器发送；支持 [火花] 占位符（自动点表情面板发续火花表情）
     dispatch_service.py     # 执行队列编排（错峰、重试）
     dispatch_task_service.py# 任务表 + 派发锁 CRUD
     schedule_service.py     # 计划时间计算

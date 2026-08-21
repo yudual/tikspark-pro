@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { RefreshRight, VideoPlay, Search } from "@element-plus/icons-vue";
 
 import AccountSelect from "../components/AccountSelect.vue";
 import RunStatusTag from "../components/RunStatusTag.vue";
@@ -17,6 +18,7 @@ const friends = ref<FriendOption[]>([]);
 const loading = ref(false);
 const friendLoading = ref(false);
 const running = ref(false);
+const retryingFailed = ref(false);
 const selectedAccountId = ref<number | null>(null);
 const selectedFriendId = ref<number | null>(null);
 
@@ -114,6 +116,19 @@ async function runManualTask() {
   }
 }
 
+async function handleRetryFailed() {
+  retryingFailed.value = true;
+  try {
+    const res = await api.retryFailedTasks();
+    ElMessage.success(res.message || "已启动失败任务重试");
+    await loadTasks();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "触发重试失败");
+  } finally {
+    retryingFailed.value = false;
+  }
+}
+
 const tasks = ref<DispatchTask[]>([]);
 const loadingTasks = ref(false);
 const totalTasks = ref(0);
@@ -121,6 +136,7 @@ const currentPage = ref(1);
 const pageSize = ref(20);
 const selectedTask = ref<DispatchTask | null>(null);
 const detailVisible = ref(false);
+let autoRefreshTimer: ReturnType<typeof setInterval>;
 
 const filterAccountId = ref<number | null>(null);
 const filterStatus = ref<RunStatus | "">("");
@@ -146,6 +162,7 @@ const taskStats = computed(() => {
     running: rows.filter((task) => task.status === "running").length,
     failed: rows.filter((task) => task.status === "failed").length,
     pending: rows.filter((task) => task.status === "pending").length,
+    success: rows.filter((task) => task.status === "success").length,
   };
 });
 
@@ -191,6 +208,15 @@ watch([currentPage, pageSize, filterAccountId, filterStatus, filterSource], () =
 onMounted(() => {
   loadAccounts();
   loadTasks();
+  autoRefreshTimer = setInterval(() => {
+    if (taskStats.value.running > 0 || taskStats.value.pending > 0) {
+      loadTasks();
+    }
+  }, 3500);
+});
+
+onUnmounted(() => {
+  clearInterval(autoRefreshTimer);
 });
 </script>
 
@@ -199,8 +225,19 @@ onMounted(() => {
     <section class="panel-card manual-run-card" v-loading="loading">
       <div class="section-head">
         <div>
-          <h2>手动执行</h2>
-          <p class="section-subtitle">选择执行范围后立即触发，任务会出现在下方任务列表中。</p>
+          <h2>手动执行与调度触发</h2>
+          <p class="section-subtitle">支持按账号或精准好友即时触发续火花，支持一键重试全部失败任务。</p>
+        </div>
+        <div class="header-actions">
+          <el-button
+            v-if="taskStats.failed > 0"
+            type="danger"
+            :loading="retryingFailed"
+            :icon="RefreshRight"
+            @click="handleRetryFailed"
+          >
+            一键重试失败任务 ({{ taskStats.failed }})
+          </el-button>
         </div>
       </div>
 
@@ -236,13 +273,15 @@ onMounted(() => {
       </div>
 
       <div class="manual-run-preview">
-        <span class="meta">即将执行</span>
+        <span class="meta">执行目标</span>
         <strong>{{ runTargetText }}</strong>
       </div>
 
       <div class="manual-run-actions">
-        <el-button type="success" :loading="running" @click="runManualTask">立即执行</el-button>
-        <el-button plain :loading="loading" @click="loadAccounts">刷新账号</el-button>
+        <el-button type="primary" :icon="VideoPlay" :loading="running" @click="runManualTask">
+          立即执行
+        </el-button>
+        <el-button plain :loading="loading" @click="loadAccounts">刷新账号与好友</el-button>
       </div>
     </section>
 
@@ -253,23 +292,27 @@ onMounted(() => {
       </article>
       <article class="metric-card">
         <p class="metric-label">等待执行</p>
-        <p class="metric-value">{{ taskStats.pending }}</p>
+        <p class="metric-value" style="color: #64748b">{{ taskStats.pending }}</p>
       </article>
       <article class="metric-card">
         <p class="metric-label">执行中</p>
-        <p class="metric-value">{{ taskStats.running }}</p>
+        <p class="metric-value" style="color: #0f766e">{{ taskStats.running }}</p>
       </article>
       <article class="metric-card">
+        <p class="metric-label">成功</p>
+        <p class="metric-value" style="color: #10b981">{{ taskStats.success }}</p>
+      </article>
+      <article class="metric-card" :style="{ color: taskStats.failed > 0 ? '#ef4444' : 'inherit' }">
         <p class="metric-label">失败</p>
-        <p class="metric-value">{{ taskStats.failed }}</p>
+        <p class="metric-value" :style="{ color: taskStats.failed > 0 ? '#ef4444' : '#64748b' }">{{ taskStats.failed }}</p>
       </article>
     </section>
 
     <section class="panel-card">
       <div class="section-head task-section-head">
         <div>
-          <h2>任务列表</h2>
-          <p class="section-subtitle">查看手动触发和自动计划生成的任务状态。</p>
+          <h2>任务队列与历史</h2>
+          <p class="section-subtitle">实时跟踪任务执行状态、重试进度与报错详情。</p>
         </div>
         <div class="task-filters">
           <AccountSelect
@@ -321,16 +364,16 @@ onMounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="结果" min-width="260">
+        <el-table-column label="结果与摘要" min-width="260">
           <template #default="{ row }">
             <div class="task-result">
               <strong>{{ row.summary || "-" }}</strong>
-              <span>{{ row.details || "-" }}</span>
+              <span :title="row.details">{{ row.details || "-" }}</span>
             </div>
           </template>
         </el-table-column>
 
-        <el-table-column label="" width="90" align="right">
+        <el-table-column label="操作" width="90" align="right">
           <template #default="{ row }">
             <el-button text type="primary" @click="openDetail(row)">详情</el-button>
           </template>
@@ -351,7 +394,7 @@ onMounted(() => {
       v-model="detailVisible"
       title="任务详情"
       direction="rtl"
-      size="420px"
+      size="440px"
     >
       <div v-if="selectedTask" class="task-detail">
         <div>
@@ -363,11 +406,11 @@ onMounted(() => {
           <strong>{{ sourceLabel(selectedTask.source) }}</strong>
         </div>
         <div>
-          <span class="meta">账号</span>
+          <span class="meta">所属账号</span>
           <strong>{{ selectedTask.account_name }}</strong>
         </div>
         <div>
-          <span class="meta">好友</span>
+          <span class="meta">目标好友</span>
           <strong>{{ selectedTask.friend_name }}</strong>
         </div>
         <div>
@@ -383,12 +426,12 @@ onMounted(() => {
           <strong>{{ formatDateTime(selectedTask.finished_at) }}</strong>
         </div>
         <div>
-          <span class="meta">摘要</span>
+          <span class="meta">结果摘要</span>
           <strong>{{ selectedTask.summary || "-" }}</strong>
         </div>
         <div>
-          <span class="meta">详情</span>
-          <p>{{ selectedTask.details || "-" }}</p>
+          <span class="meta">执行详情与分析</span>
+          <p class="details-box">{{ selectedTask.details || "-" }}</p>
         </div>
       </div>
     </el-drawer>
@@ -402,7 +445,7 @@ onMounted(() => {
 
 .task-filters {
   display: grid;
-  grid-template-columns: 180px 150px 150px auto auto;
+  grid-template-columns: 180px 140px 140px auto auto;
   gap: 10px;
   align-items: center;
 }
@@ -448,11 +491,16 @@ onMounted(() => {
   gap: 6px;
 }
 
-.task-detail p {
+.details-box {
   margin: 0;
+  padding: 12px;
+  background: var(--bg, #f8fbfd);
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.08));
+  border-radius: 8px;
   line-height: 1.6;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  word-break: break-all;
+  font-size: 13px;
 }
 
 @media (max-width: 980px) {

@@ -1,5 +1,5 @@
 export type AccountStatus = "healthy" | "invalid" | "unknown";
-export type MessageType = "fixed" | "random";
+export type MessageType = "fixed" | "random" | "sticker";
 export type RunStatus = "pending" | "running" | "success" | "failed" | "manual_review" | "skipped";
 export type DispatchSource = "manual" | "auto";
 
@@ -206,6 +206,7 @@ export interface DashboardSummary {
   active_friend_total: number;
   configured_message_total: number;
   manual_review_job_total: number;
+  failed_friend_total?: number;
   latest_logs: RunLog[];
 }
 

@@ -73,5 +73,11 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertNotIn("admin_token", payload)
 
 
+    def test_run_tasks_and_retry_failed(self):
+        resp = self.client.post("/api/run/retry-failed", headers=AUTH_HEADERS)
+        self.assertEqual(200, resp.status_code)
+        self.assertIn("重试", resp.json()["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

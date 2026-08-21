@@ -102,13 +102,37 @@ function countRandomEntries(content: string) {
     .filter(Boolean).length;
 }
 
+function appendSparkToken(value: string) {
+  if ((value ?? "").trimEnd().endsWith("[火花]")) {
+    ElMessage.info("这条内容末尾已经有火花表情了");
+    return value;
+  }
+  return value ? `${value} [火花]` : "[火花]";
+}
+
+function insertSparkToEditor(row: MessageRow) {
+  const editor = ensureEditor(row);
+  editor.messageContent = appendSparkToken(editor.messageContent);
+}
+
+function insertSparkToLibrary() {
+  libraryDraft.value = appendSparkToken(libraryDraft.value);
+}
+
+function insertSparkToBatch() {
+  batchForm.messageContent = appendSparkToken(batchForm.messageContent);
+}
+
 function randomPreview(content: string) {
   const entries = content
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
   if (entries.length === 0) return "还没有配置话术";
-  return entries.slice(0, 2).join(" / ");
+  return entries
+    .slice(0, 2)
+    .join(" / ")
+    .replace(/\[火花\]/g, "🔥");
 }
 
 function validateEditor(messageType: MessageType, messageContent: string) {
@@ -125,6 +149,10 @@ function validateEditor(messageType: MessageType, messageContent: string) {
 
 function onMessageTypeChange(row: MessageRow) {
   const editor = ensureEditor(row);
+  if (editor.messageType === "sticker") {
+    editor.messageContent = "";
+    return;
+  }
   if (editor.messageType === "fixed") {
     if (defaultRandomLibrary.value && editor.messageContent === defaultRandomLibrary.value) {
       editor.messageContent = "";
@@ -177,6 +205,10 @@ function openBatchDialog() {
 }
 
 function onBatchMessageTypeChange() {
+  if (batchForm.messageType === "sticker") {
+    batchForm.messageContent = "";
+    return;
+  }
   if (batchForm.messageType === "random" && countRandomEntries(batchForm.messageContent) < 2) {
     batchForm.messageContent = defaultRandomLibrary.value;
   } else if (batchForm.messageType === "fixed" && batchForm.messageContent === defaultRandomLibrary.value) {
@@ -313,7 +345,7 @@ onMounted(loadRows);
       <div class="section-head message-head">
         <div>
           <h2>消息配置</h2>
-          <p class="section-subtitle">固定文本和随机话术库分开管理，避免误把话术库当成单条消息。</p>
+          <p class="section-subtitle">三种模式：固定文本 / 随机话术库 / 火花表情。文本中也可用 [火花] 占位符插入续火花表情。</p>
         </div>
         <div class="message-actions">
           <el-select v-model="filterAccountId" placeholder="全部账号" clearable>
@@ -366,6 +398,7 @@ onMounted(loadRows);
                   >
                     <el-option label="固定文本" value="fixed" />
                     <el-option label="随机话术库" value="random" />
+                    <el-option label="火花表情" value="sticker" />
                   </el-select>
                 </template>
               </el-table-column>
@@ -375,8 +408,15 @@ onMounted(loadRows);
                   <el-input
                     v-if="ensureEditor(row).messageType === 'fixed'"
                     v-model="ensureEditor(row).messageContent"
-                    placeholder="请输入固定发送内容"
-                  />
+                    placeholder="文本内容，可用 [火花] 追加一条续火花表情"
+                  >
+                    <template #append>
+                      <el-button @click="insertSparkToEditor(row)">+ 火花</el-button>
+                    </template>
+                  </el-input>
+                  <div v-else-if="ensureEditor(row).messageType === 'sticker'" class="sticker-hint">
+                    🔥 执行时自动打开抖音表情面板，发送续火花表情包
+                  </div>
                   <div v-else class="library-summary">
                     <div>
                       <strong>随机话术库</strong>
@@ -417,8 +457,14 @@ onMounted(loadRows);
           v-model="libraryDraft"
           type="textarea"
           :rows="10"
-          placeholder="每行一条话术，至少填写 2 条。执行时会随机选择其中一条。"
+          placeholder="每行一条话术，至少填写 2 条。执行时会随机选择其中一条。话术中可用 [火花] 追加一条续火花表情。"
         />
+        <div class="library-toolbar">
+          <el-button size="small" plain @click="insertSparkToLibrary">
+            插入火花表情
+          </el-button>
+          <span class="meta">[火花] 发送时会自动点击抖音表情面板里的续火花表情。</span>
+        </div>
         <p class="meta">当前已收录 {{ countRandomEntries(libraryDraft) }} 条话术。</p>
       </div>
       <template #footer>
@@ -447,19 +493,27 @@ onMounted(loadRows);
           <el-radio-group v-model="batchForm.messageType" @change="onBatchMessageTypeChange">
             <el-radio value="fixed">固定文本</el-radio>
             <el-radio value="random">随机话术库</el-radio>
+            <el-radio value="sticker">火花表情</el-radio>
           </el-radio-group>
         </el-form-item>
 
-        <el-form-item :label="batchForm.messageType === 'random' ? '话术库内容' : '固定消息内容'">
-          <div class="library-editor">
+        <el-form-item :label="batchForm.messageType === 'random' ? '话术库内容' : batchForm.messageType === 'sticker' ? '续火花表情' : '固定消息内容'">
+          <div v-if="batchForm.messageType === 'sticker'" class="library-editor">
+            <div class="sticker-hint">🔥 执行时自动打开抖音表情面板，发送续火花表情包</div>
+          </div>
+          <div v-else class="library-editor">
             <el-input
               v-model="batchForm.messageContent"
               type="textarea"
               :rows="batchForm.messageType === 'random' ? 8 : 4"
               :placeholder="batchForm.messageType === 'random'
-                ? '每行一条话术，至少填写 2 条。'
-                : '请输入要统一应用的固定消息内容。'"
+                ? '每行一条话术，至少填写 2 条。话术中可用 [火花] 追加一条续火花表情。'
+                : '请输入要统一应用的固定消息内容，可用 [火花] 追加一条续火花表情。'"
             />
+            <div class="library-toolbar">
+              <el-button size="small" plain @click="insertSparkToBatch">插入火花表情</el-button>
+              <span class="meta">[火花] 会先发送前面的文字，再单独发一条续火花表情。</span>
+            </div>
             <p v-if="batchForm.messageType === 'random'" class="meta">
               当前已收录 {{ countRandomEntries(batchForm.messageContent) }} 条话术。
             </p>
@@ -530,6 +584,20 @@ onMounted(loadRows);
   display: grid;
   gap: 8px;
   width: 100%;
+}
+
+.library-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sticker-hint {
+  color: var(--muted);
+  background: var(--el-fill-color-light, #f5f7fa);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 @media (max-width: 900px) {

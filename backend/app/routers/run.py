@@ -44,6 +44,26 @@ def _run_tasks_background(account_id: int | None = None, friend_id: int | None =
         db.close()
 
 
+def _run_retry_failed_background():
+    db = SessionLocal()
+    try:
+        from ..services.dispatch_service import retry_failed_tasks
+        retry_failed_tasks(db)
+    finally:
+        db.close()
+
+
+@router.post("/retry-failed")
+def run_retry_failed(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    if is_dispatch_running_in_db(db):
+        raise HTTPException(status_code=409, detail="任务调度正在运行。")
+    background_tasks.add_task(_run_retry_failed_background)
+    return {"message": "已在后台启动失败任务重试。"}
+
+
 @router.post("/tasks")
 def run_tasks(
     background_tasks: BackgroundTasks,

@@ -84,6 +84,9 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     manual_review_job_total = db.scalar(
         select(func.count(RunLog.id)).where(RunLog.status == RunStatus.manual_review)
     ) or 0
+    failed_friend_total = db.scalar(
+        select(func.count(Friend.id)).where(Friend.is_active.is_(True), Friend.consecutive_failures > 0)
+    ) or 0
     latest_logs = (
         db.execute(select(RunLog).order_by(RunLog.created_at.desc()).limit(8)).scalars().all()
     )
@@ -95,5 +98,6 @@ def get_dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
         active_friend_total=active_friend_total,
         configured_message_total=configured_message_total,
         manual_review_job_total=manual_review_job_total,
+        failed_friend_total=failed_friend_total,
         latest_logs=[_serialize_run_log(log) for log in latest_logs],
     )

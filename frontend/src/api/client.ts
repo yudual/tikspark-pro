@@ -145,6 +145,11 @@ export const api = {
       method: "POST",
     });
   },
+  retryFailedTasks() {
+    return request<{ message: string }>("/api/run/retry-failed", {
+      method: "POST",
+    });
+  },
   listAccounts() {
     return request<Account[]>("/api/accounts");
   },

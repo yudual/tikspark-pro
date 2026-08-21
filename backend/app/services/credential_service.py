@@ -17,6 +17,9 @@ from .secret_service import get_secret_service
 DEFAULT_MESSAGE = "[pending] configure message content here"
 
 
+from .execution_service import PLAYWRIGHT_STEALTH_SCRIPT
+
+
 @dataclass
 class ParsedCredential:
     dy_id: str
@@ -213,6 +216,7 @@ class CredentialService:
                 locale="zh-CN",
                 timezone_id="Asia/Shanghai",
             )
+            context.add_init_script(PLAYWRIGHT_STEALTH_SCRIPT)
             context.add_cookies(cookies)
             page = context.new_page()
 

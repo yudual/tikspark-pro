@@ -19,6 +19,7 @@ class AccountStatus(str, Enum):
 class MessageType(str, Enum):
     fixed = "fixed"
     random = "random"
+    sticker = "sticker"
 
 
 class RunStatus(str, Enum):

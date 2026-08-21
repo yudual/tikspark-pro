@@ -253,6 +253,7 @@ class DashboardSummary(BaseModel):
     active_friend_total: int
     configured_message_total: int
     manual_review_job_total: int
+    failed_friend_total: int = 0
     latest_logs: list[RunLogResponse]
 
 

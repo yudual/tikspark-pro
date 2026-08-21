@@ -27,13 +27,14 @@ from .dispatch_task_service import (
     mark_task_running,
     release_dispatch_lock,
 )
-from .execution_service import execution_service
+from .execution_service import SPARK_STICKER_TOKEN, execution_service
 from .schedule_service import (
     compute_friend_next_run_at,
     compute_retry_run_at,
     get_local_now,
     normalize_schedule_window,
 )
+from .secret_service import get_secret_service
 
 _dispatch_lock = Lock()
 
@@ -44,6 +45,40 @@ def is_dispatch_running() -> bool:
 
 def is_dispatch_running_in_db(db: Session) -> bool:
     return is_dispatch_running() or is_dispatch_locked(db)
+
+
+def retry_failed_tasks(db: Session) -> int:
+    """一键重试所有失败/需重试的好友任务。"""
+    failed_friends = (
+        db.execute(
+            select(Friend)
+            .options(joinedload(Friend.account), joinedload(Friend.message))
+            .where(Friend.is_active.is_(True), Friend.consecutive_failures > 0)
+        )
+        .scalars()
+        .all()
+    )
+    if not failed_friends:
+        # 查找最新日志为失败的好友
+        subq = (
+            select(RunLog.friend_id)
+            .where(RunLog.status == RunStatus.failed)
+            .order_by(RunLog.created_at.desc())
+            .limit(50)
+        )
+        failed_friends = (
+            db.execute(
+                select(Friend)
+                .options(joinedload(Friend.account), joinedload(Friend.message))
+                .where(Friend.is_active.is_(True), Friend.id.in_(subq))
+            )
+            .scalars()
+            .all()
+        )
+    if not failed_friends:
+        return 0
+    friend_ids = [f.id for f in failed_friends]
+    return dispatch_active_messages(db, friend_ids=friend_ids, is_auto_cron=False)
 
 
 def dispatch_active_messages(
@@ -210,7 +245,7 @@ def _run_friend_task(
 ) -> tuple[RunStatus, str, str]:
     if friend.account.status == AccountStatus.invalid:
         summary = "账号凭证失效"
-        details = "账号状态已标记为失效，本次未创建执行任务。"
+        details = "账号状态已标记为失效，请先在【账号管理】页面更新该账号的 Cookie 凭证。"
         global_state.current_step = "账号凭证失效，跳过本次任务"
         global_state.last_failure_at = current_time
         global_state.last_failure_reason = details
@@ -231,6 +266,22 @@ def _run_friend_task(
     global_state.current_step = "浏览器自动化发送中"
     result = execution_service.send_message(friend.account, friend, content)
     result_status = RunStatus.success if result.success else RunStatus.failed
+
+    refreshed_cookies = getattr(result, "refreshed_cookies", None)
+    if refreshed_cookies:
+        try:
+            friend.account.cookie_text = get_secret_service().encrypt(refreshed_cookies)
+            friend.account.cookie_updated_at = current_time
+            if result.success and friend.account.status != AccountStatus.healthy:
+                friend.account.status = AccountStatus.healthy
+                friend.account.status_reason = "会话活跃且已自动刷新凭证"
+        except Exception:
+            pass
+
+    if result.summary in ("账号凭证已失效", "凭证失效"):
+        friend.account.status = AccountStatus.invalid
+        friend.account.status_reason = result.details
+
     if result.success:
         global_state.last_success_at = current_time
         global_state.last_success_summary = result.summary
@@ -240,7 +291,7 @@ def _run_friend_task(
         global_state.last_error = result.details
         global_state.last_failure_at = current_time
         global_state.last_failure_reason = result.details
-        global_state.blocked_point = "发送结果未确认" if result.summary == "发送结果未确认" else "发送阶段失败"
+        global_state.blocked_point = "发送阶段未通过"
 
     db.add(
         RunLog(
@@ -258,8 +309,10 @@ def _resolve_message_content(friend: Friend) -> str:
     content = friend.message.message_content if friend.message else ""
     if friend.message and friend.message.message_type == MessageType.random:
         lines = [line.strip() for line in content.split("\n") if line.strip()]
-        return random.choice(lines) if lines else "[火花]"
-    return content if content.strip() else "[火花]"
+        return random.choice(lines) if lines else SPARK_STICKER_TOKEN
+    if friend.message and friend.message.message_type == MessageType.sticker:
+        return SPARK_STICKER_TOKEN
+    return content if content.strip() else SPARK_STICKER_TOKEN
 
 
 def _mark_dispatch_skipped(message: str) -> None:
