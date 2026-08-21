@@ -2,7 +2,17 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { RefreshRight, WarningFilled, CircleCheckFilled, UserFilled, ChatDotRound } from "@element-plus/icons-vue";
+import {
+  RefreshRight,
+  WarningFilled,
+  CircleCheckFilled,
+  UserFilled,
+  ChatDotRound,
+  VideoPlay,
+  Calendar,
+  ArrowRight,
+  Document,
+} from "@element-plus/icons-vue";
 
 import { api } from "../api/client";
 import type { DashboardSummary, SystemStatusResponse } from "../types";
@@ -34,7 +44,7 @@ const failedCount = computed(() => summary.value?.failed_friend_total ?? 0);
 const abnormalLogs = computed(() =>
   (summary.value?.latest_logs ?? []).filter(
     (log) => log.status === "failed" || log.status === "manual_review",
-  ).slice(0, 6),
+  ).slice(0, 5),
 );
 
 function formatDateTime(value: string | null | undefined) {
@@ -60,7 +70,7 @@ async function handleRetryFailed() {
   retrying.value = true;
   try {
     const res = await api.retryFailedTasks();
-    ElMessage.success(res.message || "已在后台启动失败任务重试");
+    ElMessage.success(res.message || "已启动失败任务重试");
     await loadDashboard();
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "触发重试失败");
@@ -82,7 +92,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="view-grid dashboard-compact" v-loading="loading">
+  <div class="view-grid" v-loading="loading">
     <el-alert
       v-if="loadError"
       class="dashboard-alert"
@@ -92,16 +102,18 @@ onUnmounted(() => {
       :closable="false"
     />
 
-    <!-- 失败任务快速自愈引导横幅 -->
+    <!-- 异常快速自愈引导横幅 -->
     <div v-if="failedCount > 0" class="auto-heal-banner">
-      <div class="banner-content">
-        <el-icon class="banner-icon"><WarningFilled /></el-icon>
-        <div>
-          <strong>发现 {{ failedCount }} 位好友在上次自动续火花中遇到异常</strong>
-          <p class="meta">已增强多重定位与文字表情保底机制，无需手动逐个操作，点击右侧即可一键全量恢复。</p>
+      <div class="banner-left">
+        <div class="banner-icon-box">
+          <el-icon><WarningFilled /></el-icon>
+        </div>
+        <div class="banner-text">
+          <strong>检测到 {{ failedCount }} 位好友上次续火花存在异常</strong>
+          <p>已启用五级智能重试与文字表情保底机制，点击右侧即可一键全量恢复派发。</p>
         </div>
       </div>
-      <el-button type="danger" :loading="retrying" :icon="RefreshRight" @click="handleRetryFailed">
+      <el-button type="danger" :loading="retrying" :icon="RefreshRight" size="large" @click="handleRetryFailed">
         一键重试失败好友 ({{ failedCount }})
       </el-button>
     </div>
@@ -109,100 +121,122 @@ onUnmounted(() => {
     <!-- 核心指标卡片 -->
     <section class="metrics-grid">
       <article class="metric-card metric-primary">
-        <div class="metric-icon-wrap"><el-icon><UserFilled /></el-icon></div>
-        <div>
+        <div class="metric-icon-wrap">
+          <el-icon><UserFilled /></el-icon>
+        </div>
+        <div class="metric-info-content">
           <p class="metric-label">托管账号总数</p>
           <p class="metric-value">{{ summary?.account_total ?? 0 }}</p>
         </div>
       </article>
+
       <article class="metric-card metric-success">
-        <div class="metric-icon-wrap"><el-icon><CircleCheckFilled /></el-icon></div>
-        <div>
-          <p class="metric-label">正常活跃账号</p>
+        <div class="metric-icon-wrap">
+          <el-icon><CircleCheckFilled /></el-icon>
+        </div>
+        <div class="metric-info-content">
+          <p class="metric-label">正常托管账号</p>
           <p class="metric-value">{{ summary?.healthy_account_total ?? 0 }}</p>
         </div>
       </article>
+
       <article class="metric-card metric-info">
-        <div class="metric-icon-wrap"><el-icon><ChatDotRound /></el-icon></div>
-        <div>
+        <div class="metric-icon-wrap">
+          <el-icon><ChatDotRound /></el-icon>
+        </div>
+        <div class="metric-info-content">
           <p class="metric-label">已激活续火好友</p>
           <p class="metric-value">{{ summary?.active_friend_total ?? 0 }}</p>
         </div>
       </article>
+
       <article class="metric-card" :class="failedCount > 0 ? 'metric-danger' : 'metric-neutral'">
-        <div class="metric-icon-wrap"><el-icon><WarningFilled /></el-icon></div>
-        <div>
-          <p class="metric-label">异常待重试</p>
+        <div class="metric-icon-wrap">
+          <el-icon><WarningFilled /></el-icon>
+        </div>
+        <div class="metric-info-content">
+          <p class="metric-label">异常待处理</p>
           <p class="metric-value">{{ failedCount }}</p>
         </div>
       </article>
     </section>
 
-    <!-- 引擎实时运行状态条 -->
+    <!-- 引擎实时监控面板 -->
     <section class="panel-card engine-strip-card">
-      <div class="engine-strip-main">
-        <div class="engine-badge" :class="systemStatus?.mode">
-          <span class="status-dot" :class="{ active: systemStatus?.is_running || systemStatus?.mode === 'scanning' }"></span>
-          {{ engineModeLabel }}
+      <div class="engine-strip-top">
+        <div class="engine-strip-main">
+          <div class="engine-badge" :class="systemStatus?.mode">
+            <span class="status-dot" :class="{ active: systemStatus?.is_running || systemStatus?.mode === 'scanning' }"></span>
+            {{ engineModeLabel }}
+          </div>
+          <div class="engine-step">
+            <span class="meta">当前执行步骤</span>
+            <strong>{{ systemStatus?.current_step || systemStatus?.status_text || "调度器就绪中" }}</strong>
+          </div>
         </div>
-        <div class="engine-step">
-          <span class="meta">实时步骤</span>
-          <strong>{{ systemStatus?.current_step || systemStatus?.status_text || "系统就绪，等待扫描" }}</strong>
-          <span v-if="systemStatus?.current_account && systemStatus?.current_friend" class="meta target-highlight">
-            当前目标：{{ systemStatus.current_account }} ➜ {{ systemStatus.current_friend }}
-          </span>
+        <div class="engine-actions">
+          <el-button v-if="failedCount > 0" type="danger" plain :loading="retrying" :icon="RefreshRight" @click="handleRetryFailed">
+            重试失败 ({{ failedCount }})
+          </el-button>
+          <el-button type="primary" :icon="VideoPlay" @click="router.push('/run')">手动执行</el-button>
+          <el-button plain :icon="Calendar" @click="router.push('/auto-schedule')">自动计划</el-button>
         </div>
       </div>
+
       <div class="engine-strip-facts">
-        <div>
-          <span class="meta">下次扫描</span>
+        <div class="engine-fact-box">
+          <span class="meta">下次定时扫描</span>
           <strong>{{ formatDateTime(systemStatus?.next_scan_at) }}</strong>
         </div>
-        <div>
-          <span class="meta">本轮到点</span>
-          <strong>{{ systemStatus?.due_task_total ?? 0 }}</strong>
+        <div class="engine-fact-box">
+          <span class="meta">本轮到点任务</span>
+          <strong>{{ systemStatus?.due_task_total ?? 0 }} 个</strong>
         </div>
-        <div>
-          <span class="meta">队列中任务</span>
-          <strong>{{ systemStatus?.queued_task_total ?? 0 }}</strong>
+        <div class="engine-fact-box">
+          <span class="meta">执行队列排队</span>
+          <strong>{{ systemStatus?.queued_task_total ?? 0 }} 个</strong>
         </div>
-      </div>
-      <div class="dashboard-actions">
-        <el-button v-if="failedCount > 0" type="danger" plain :loading="retrying" @click="handleRetryFailed">
-          重试失败 ({{ failedCount }})
-        </el-button>
-        <el-button type="primary" plain @click="router.push('/run')">手动执行</el-button>
-        <el-button plain @click="router.push('/auto-schedule')">自动计划</el-button>
+        <div class="engine-fact-box" v-if="systemStatus?.current_account && systemStatus?.current_friend">
+          <span class="meta">当前派发目标</span>
+          <strong style="color: var(--primary)">{{ systemStatus.current_account }} ➜ {{ systemStatus.current_friend }}</strong>
+        </div>
       </div>
     </section>
 
-    <!-- 异常记录与快速排障 -->
-    <section class="panel-card dashboard-log-card">
-      <div class="section-head compact-head">
+    <!-- 异常记录与排障分析 -->
+    <section class="panel-card">
+      <div class="section-head">
         <div>
           <h2>最近异常记录与自愈分析</h2>
-          <p class="section-subtitle">展示最近的失败与复核事件，系统内置自动重试与文字表情保底策略。</p>
+          <p class="section-subtitle">展示最近执行中的失败事件，系统已内置自动文字表情降级与多级寻人重试策略。</p>
         </div>
-        <div class="header-actions">
-          <el-button v-if="abnormalLogs.length > 0" size="small" type="danger" plain :loading="retrying" @click="handleRetryFailed">
-            一键全量重试
-          </el-button>
-          <el-button plain @click="router.push('/logs')">查看完整历史日志</el-button>
-        </div>
+        <el-button plain :icon="Document" @click="router.push('/logs')">
+          查看完整运行日志 <el-icon class="el-icon--right"><ArrowRight /></el-icon>
+        </el-button>
       </div>
 
-      <div class="dense-list compact-log-list">
-        <div v-for="log in abnormalLogs" :key="log.id" class="log-item compact-log-item">
-          <div class="compact-log-head">
-            <strong>{{ log.summary }}</strong>
-            <el-tag size="small" :type="log.status === 'failed' ? 'danger' : 'warning'">
-              {{ log.status === "failed" ? "执行失败" : "人工复核" }}
-            </el-tag>
+      <div class="abnormal-list">
+        <div v-for="log in abnormalLogs" :key="log.id" class="abnormal-item">
+          <div class="abnormal-head">
+            <div class="abnormal-title">
+              <span class="abnormal-dot"></span>
+              <strong>{{ log.summary }}</strong>
+            </div>
+            <div class="abnormal-tags">
+              <el-tag size="small" :type="log.status === 'failed' ? 'danger' : 'warning'" effect="light">
+                {{ log.status === "failed" ? "执行失败" : "人工复核" }}
+              </el-tag>
+              <span class="meta time-text">{{ new Date(log.created_at).toLocaleString() }}</span>
+            </div>
           </div>
-          <p class="meta log-details-text">{{ log.details }}</p>
-          <p class="meta time-text">{{ new Date(log.created_at).toLocaleString() }}</p>
+          <p class="abnormal-detail">{{ log.details }}</p>
         </div>
-        <el-empty v-if="abnormalLogs.length === 0" description="所有自动续火任务均运行平稳，暂无异常记录" />
+
+        <el-empty
+          v-if="abnormalLogs.length === 0"
+          description="太棒了！近期所有好友自动续火花任务均平稳执行完成"
+          :image-size="80"
+        />
       </div>
     </section>
   </div>
@@ -213,51 +247,101 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(249, 115, 22, 0.12));
-  border: 1px solid rgba(239, 68, 68, 0.25);
-  border-radius: 12px;
-  padding: 16px 20px;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.06) 0%, rgba(249, 115, 22, 0.08) 100%);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: var(--radius-lg);
+  padding: 18px 24px;
+  gap: 20px;
+}
+
+.banner-left {
+  display: flex;
+  align-items: center;
   gap: 16px;
-  margin-bottom: 8px;
 }
 
-.banner-content {
+.banner-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
   display: flex;
   align-items: center;
-  gap: 14px;
-}
-
-.banner-icon {
-  font-size: 28px;
-  color: var(--danger, #dc2626);
-}
-
-.banner-content p {
-  margin: 4px 0 0;
-}
-
-.metric-primary { border-left: 4px solid #0f766e; }
-.metric-success { border-left: 4px solid #10b981; }
-.metric-info { border-left: 4px solid #3b82f6; }
-.metric-danger { border-left: 4px solid #ef4444; background: rgba(239, 68, 68, 0.04); }
-.metric-neutral { border-left: 4px solid #94a3b8; }
-
-.metric-icon-wrap {
+  justify-content: center;
   font-size: 24px;
-  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.banner-text strong {
+  font-size: 15px;
+  color: #991b1b;
+  display: block;
+}
+
+.banner-text p {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.engine-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.abnormal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.abnormal-item {
+  background: #f8fafc;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.abnormal-item:hover {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+.abnormal-head {
   display: flex;
   align-items: center;
-  margin-right: 12px;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.target-highlight {
-  color: var(--primary);
-  font-weight: 500;
-  margin-top: 2px;
+.abnormal-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.log-details-text {
-  word-break: break-word;
+.abnormal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.abnormal-tags {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.abnormal-detail {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .time-text {

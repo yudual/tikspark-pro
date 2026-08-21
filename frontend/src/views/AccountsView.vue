@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, reactive } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Refresh, Key, Edit, Delete, Search, UserFilled, CircleCheck } from "@element-plus/icons-vue";
+import { Plus, Refresh, Key, Edit, Delete, Search, UserFilled, CircleCheck, Check, Close } from "@element-plus/icons-vue";
 
 import { api } from "../api/client";
 import type { Account, Friend } from "../types";
@@ -56,7 +56,7 @@ const filteredFriends = computed(() => {
 
 const activeTotalText = computed(() => {
   if (!currentAccount.value) return "";
-  return `已激活 ${currentAccount.value.active_friend_count}/${currentAccount.value.friend_count} 个好友`;
+  return `已激活 ${currentAccount.value.active_friend_count} / ${currentAccount.value.friend_count} 位好友`;
 });
 
 function formatScheduleTime(value: string | null) {
@@ -76,12 +76,12 @@ function formatCookieDate(value: string | null) {
 }
 
 function cookieStatusLabel(account: Account) {
-  if (!account.cookie_expires_at) return "Cookie 状态正常";
+  if (!account.cookie_expires_at) return "Cookie 状态良好";
   const diffMs = new Date(account.cookie_expires_at).getTime() - Date.now();
-  if (diffMs <= 0) return "Cookie 已过期，请及时更新";
+  if (diffMs <= 0) return "Cookie 已过期";
   const days = Math.floor(diffMs / 86400000);
-  if (days <= 1) return "Cookie 即将到期";
-  return `Cookie 约 ${days} 天后到期`;
+  if (days <= 1) return "Cookie 即将过期";
+  return `Cookie 约 ${days} 天后过期`;
 }
 
 function cookieStatusClass(account: Account) {
@@ -114,7 +114,7 @@ async function handleRefreshAccount(account: Account) {
   try {
     await api.refreshFriends(account.id);
     await loadAccounts();
-    ElMessage.success(account.avatar_url ? "账号与好友资料已重新同步" : "已重新尝试嗅探账号与好友列表");
+    ElMessage.success(account.avatar_url ? "账号与好友列表已更新" : "已重新同步资料");
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "同步账号资料失败");
   } finally {
@@ -130,7 +130,7 @@ async function submitImport() {
   importing.value = true;
   try {
     await api.importAccount(cookieText.value.trim());
-    ElMessage.success("账号已成功导入并同步联系人");
+    ElMessage.success("账号已成功导入并同步好友");
     cookieText.value = "";
     importDialogVisible.value = false;
     await loadAccounts();
@@ -156,7 +156,7 @@ async function submitCookieUpdate() {
   updatingCookie.value = true;
   try {
     await api.updateAccountCookie(cookieUpdateAccount.value.id, cookieUpdateText.value.trim());
-    ElMessage.success("Cookie 已更新，原有好友与配置已无损保留");
+    ElMessage.success("Cookie 已更新并保留原有配置");
     cookieDialogVisible.value = false;
     cookieUpdateText.value = "";
     await loadAccounts();
@@ -286,10 +286,10 @@ onMounted(loadAccounts);
       <div class="section-head">
         <div>
           <h2>账号资产与凭证管理</h2>
-          <p class="section-subtitle">Cookie 加密保存在本地，执行时支持自动刷新保活与防风控错峰。</p>
+          <p class="section-subtitle">Cookie 凭证本地加密安全托管，自动执行时支持真人拟态与无感保活。</p>
         </div>
-        <div style="display: flex; gap: 12px">
-          <el-button type="primary" :icon="Plus" @click="importDialogVisible = true">导入新账号凭证</el-button>
+        <div style="display: flex; gap: 10px">
+          <el-button type="primary" :icon="Plus" @click="importDialogVisible = true">导入新账号</el-button>
           <el-button plain :icon="Refresh" :loading="loading" @click="manualRefresh">刷新列表</el-button>
         </div>
       </div>
@@ -304,9 +304,9 @@ onMounted(loadAccounts);
         <el-input
           v-model="searchQuery"
           :prefix-icon="Search"
-          placeholder="搜索昵称或抖音号"
+          placeholder="搜索昵称或抖音号..."
           clearable
-          style="width: 240px"
+          style="width: 260px"
         />
       </div>
 
@@ -314,56 +314,64 @@ onMounted(loadAccounts);
         <article v-for="account in filteredAccounts" :key="account.id" class="account-card">
           <div class="account-head">
             <el-avatar
-              :size="56"
+              :size="52"
               :src="account.avatar_url"
-              class="avatar account-avatar"
-              :class="{ missing: !account.avatar_url }"
+              class="account-avatar"
             >
               <span>{{ account.nickname.charAt(0) }}</span>
             </el-avatar>
             <div style="min-width: 0; flex: 1">
               <strong class="account-name">{{ account.nickname }}</strong>
-              <div class="meta mono dy-id-text" :title="account.dy_id">{{ account.dy_id || "抖音账号" }}</div>
+              <div class="dy-id-text mono">{{ account.dy_id || "抖音账号" }}</div>
             </div>
-          </div>
-
-          <div class="status-pill" :class="account.status">
-            <span>{{ statusLabel(account.status) }}</span>
+            <div class="status-pill" :class="account.status">
+              <span>{{ statusLabel(account.status) }}</span>
+            </div>
           </div>
 
           <div class="account-info">
-            <div class="meta">已激活 <strong>{{ account.active_friend_count }}</strong> / {{ account.friend_count }} 位好友续火</div>
-            <div class="cookie-status" :class="cookieStatusClass(account)">
-              {{ cookieStatusLabel(account) }}
+            <div class="account-info-row">
+              <span class="meta">续火好友：</span>
+              <strong>{{ account.active_friend_count }} / {{ account.friend_count }} 人</strong>
             </div>
-            <div class="meta">最近刷新：{{ formatCookieDate(account.cookie_updated_at || account.last_checked_at) }}</div>
-            <div class="meta truncate" v-if="account.proxy_url" :title="account.proxy_url">
-              代理: {{ account.proxy_url }}
+            <div class="account-info-row">
+              <span class="meta">Cookie 状态：</span>
+              <div class="cookie-status" :class="cookieStatusClass(account)">
+                {{ cookieStatusLabel(account) }}
+              </div>
             </div>
-            <div class="meta status-reason">{{ account.status_reason }}</div>
+            <div class="account-info-row" v-if="account.proxy_url">
+              <span class="meta">专属代理：</span>
+              <span class="meta mono truncate" :title="account.proxy_url">{{ account.proxy_url }}</span>
+            </div>
+            <div class="status-reason-box" v-if="account.status_reason">
+              {{ account.status_reason }}
+            </div>
           </div>
 
           <div class="account-actions">
-            <el-button type="primary" plain @click="openFriendDialog(account)">管理好友</el-button>
-            <el-button plain :loading="refreshingAccount[account.id]" @click="handleRefreshAccount(account)">同步资料</el-button>
-            <el-button plain :icon="Key" @click="openCookieDialog(account)">更新 Cookie</el-button>
-            <el-button plain :icon="Edit" @click="openEditDialog(account)">编辑</el-button>
-            <el-button type="danger" plain :icon="Delete" @click="handleRemoveAccount(account)">删除</el-button>
+            <el-button type="primary" plain size="small" @click="openFriendDialog(account)">管理好友</el-button>
+            <el-button plain size="small" :loading="refreshingAccount[account.id]" @click="handleRefreshAccount(account)">同步资料</el-button>
+            <el-button plain size="small" :icon="Key" @click="openCookieDialog(account)">更新凭证</el-button>
+            <el-button plain size="small" :icon="Edit" @click="openEditDialog(account)">编辑</el-button>
+            <el-button type="danger" plain size="small" :icon="Delete" @click="handleRemoveAccount(account)">删除</el-button>
           </div>
         </article>
+
+        <el-empty v-if="filteredAccounts.length === 0" description="暂无符合条件的账号数据" style="grid-column: 1 / -1" />
       </div>
     </section>
 
     <!-- 导入新账号对话框 -->
-    <el-dialog v-model="importDialogVisible" title="导入账号凭证 (Cookie)" width="640px">
+    <el-dialog v-model="importDialogVisible" title="导入账号凭证 (Cookie)" width="620px">
       <div class="dialog-tips">
-        💡 提示：在电脑浏览器登录网页版抖音 (douyin.com)，按 F12 打开开发者工具复制完整 Cookie 字符串或 EditThisCookie JSON 格式，粘贴在下方即可。系统将自动提取账号昵称与私信好友。
+        💡 提示：在电脑浏览器登录网页版抖音 (douyin.com)，按 F12 复制 Cookie 字符串或 EditThisCookie 导出的 JSON，粘贴至下方即可自动嗅探账号与私信好友。
       </div>
       <el-input
         v-model="cookieText"
         type="textarea"
         :rows="8"
-        placeholder="请粘贴完整 Cookie 凭证字符串或 JSON 格式"
+        placeholder="请粘贴完整 Cookie 凭证字符串或 JSON 格式..."
       />
       <template #footer>
         <el-button @click="importDialogVisible = false" :disabled="importing">取消</el-button>
@@ -372,15 +380,15 @@ onMounted(loadAccounts);
     </el-dialog>
 
     <!-- 更新 Cookie 对话框 -->
-    <el-dialog v-model="cookieDialogVisible" title="更新账号 Cookie 凭证" width="640px">
-      <p class="meta" style="margin-top: 0">
-        正在为账号 <strong>【{{ cookieUpdateAccount?.nickname }}】</strong> 更新凭证。更新后将保留原有全部好友、话术和自动计划配置。
+    <el-dialog v-model="cookieDialogVisible" title="更新账号 Cookie 凭证" width="620px">
+      <p class="meta" style="margin-bottom: 12px">
+        正在为账号 <strong>【{{ cookieUpdateAccount?.nickname }}】</strong> 更新凭证，原有好友与计划配置将无损保留。
       </p>
       <el-input
         v-model="cookieUpdateText"
         type="textarea"
         :rows="8"
-        placeholder="请粘贴新的完整 Cookie 凭证"
+        placeholder="请粘贴新的完整 Cookie 凭证..."
       />
       <template #footer>
         <el-button @click="cookieDialogVisible = false" :disabled="updatingCookie">取消</el-button>
@@ -399,7 +407,7 @@ onMounted(loadAccounts);
         </el-form-item>
         <el-form-item label="独立代理 URL (可选)">
           <el-input v-model="editForm.proxy_url" placeholder="例如 http://user:pass@host:port" />
-          <p class="meta" style="margin-top: 4px">留空则使用本地/服务器网络直连。多账号建议配置不同代理以降低风控概率。</p>
+          <p class="meta" style="margin-top: 4px">留空则使用服务器直连，配置独立代理可有效降低风控风险。</p>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -412,14 +420,14 @@ onMounted(loadAccounts);
     <el-dialog
       v-model="friendDialogVisible"
       :title="currentAccount ? `${currentAccount.nickname} · 续火好友管理` : '好友管理'"
-      width="760px"
+      width="720px"
     >
       <div class="friend-dialog-header">
         <div class="meta">{{ activeTotalText }}</div>
         <div class="friend-dialog-actions">
-          <el-button size="small" plain :loading="togglingAll" @click="batchToggleFriends(true)">全部激活</el-button>
-          <el-button size="small" plain :loading="togglingAll" @click="batchToggleFriends(false)">全部关闭</el-button>
-          <el-button size="small" type="primary" plain :loading="friendLoading" @click="refreshFriends">重新拉取私信列表</el-button>
+          <el-button size="small" plain :loading="togglingAll" :icon="Check" @click="batchToggleFriends(true)">全部激活</el-button>
+          <el-button size="small" plain :loading="togglingAll" :icon="Close" @click="batchToggleFriends(false)">全部关闭</el-button>
+          <el-button size="small" type="primary" plain :loading="friendLoading" :icon="Refresh" @click="refreshFriends">重新拉取私信列表</el-button>
         </div>
       </div>
 
@@ -427,7 +435,7 @@ onMounted(loadAccounts);
         <el-input
           v-model="friendSearchQuery"
           :prefix-icon="Search"
-          placeholder="搜索好友昵称或抖音号..."
+          placeholder="快速搜索好友昵称或抖音号..."
           clearable
           size="small"
         />
@@ -435,14 +443,14 @@ onMounted(loadAccounts);
 
       <div v-loading="friendLoading" class="friend-dialog-list">
         <div v-for="friend in filteredFriends" :key="friend.id" class="friend-row">
-          <el-avatar :size="44" :src="friend.friend_avatar" class="avatar">
+          <el-avatar :size="42" :src="friend.friend_avatar" class="avatar">
             <span>{{ friend.friend_nickname.charAt(0) }}</span>
           </el-avatar>
           <div style="min-width: 0; flex: 1">
             <strong class="friend-name-text">{{ friend.friend_nickname }}</strong>
-            <div class="meta mono">{{ friend.friend_dy_id }}</div>
-            <div v-if="friend.is_active" class="meta active-plan-text">
-              ⏰ 时段 {{ friend.schedule_window }} · 下次 {{ formatScheduleTime(friend.next_run_at) }}
+            <div class="meta mono" style="font-size: 12px">{{ friend.friend_dy_id }}</div>
+            <div v-if="friend.is_active" class="active-plan-text">
+              ⏰ 计划时段 {{ friend.schedule_window }} · 下次执行 {{ formatScheduleTime(friend.next_run_at) }}
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 12px">
@@ -455,20 +463,38 @@ onMounted(loadAccounts);
             />
           </div>
         </div>
-        <el-empty v-if="filteredFriends.length === 0" description="未搜索到符合条件的好友" />
+        <el-empty v-if="filteredFriends.length === 0" description="未搜索到符合条件的好友" :image-size="60" />
       </div>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
+.account-info-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-reason-box {
+  background: var(--bg-surface-subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dialog-tips {
-  background: rgba(15, 118, 110, 0.08);
-  border: 1px solid rgba(15, 118, 110, 0.2);
-  border-radius: 8px;
-  padding: 12px 14px;
+  background: var(--primary-light);
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
   font-size: 13px;
-  color: var(--primary, #0f766e);
+  color: var(--primary);
   line-height: 1.6;
   margin-bottom: 14px;
 }
@@ -496,26 +522,27 @@ onMounted(loadAccounts);
   align-items: center;
   gap: 14px;
   padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--border, rgba(15, 23, 42, 0.08));
-  background: var(--surface, #ffffff);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface);
   margin-bottom: 8px;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 
 .friend-row:hover {
   background: #f8fafc;
-  border-color: rgba(15, 118, 110, 0.3);
+  border-color: #cbd5e1;
 }
 
 .friend-name-text {
   font-size: 14px;
-  color: var(--text, #0f172a);
+  color: var(--text-main);
 }
 
 .active-plan-text {
-  color: var(--primary, #0f766e);
+  color: var(--primary);
   font-size: 12px;
   margin-top: 2px;
+  font-weight: 500;
 }
 </style>

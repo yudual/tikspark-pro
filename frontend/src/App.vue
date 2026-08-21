@@ -10,6 +10,8 @@ import {
   Setting,
   User,
   VideoPlay,
+  Lock,
+  Unlock,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 
@@ -20,7 +22,7 @@ const router = useRouter();
 
 const navGroups = [
   {
-    label: "工作台",
+    label: "日常运营",
     items: [
       { label: "运行看板", path: "/dashboard", icon: DataAnalysis },
       { label: "执行与任务", path: "/run", icon: VideoPlay },
@@ -28,20 +30,28 @@ const navGroups = [
     ],
   },
   {
-    label: "配置",
+    label: "策略配置",
     items: [
       { label: "账号管理", path: "/accounts", icon: User },
-      { label: "消息配置", path: "/messages", icon: ChatLineSquare },
+      { label: "消息与话术", path: "/messages", icon: ChatLineSquare },
       { label: "自动计划", path: "/auto-schedule", icon: Calendar },
     ],
   },
   {
-    label: "系统",
+    label: "系统中心",
     items: [{ label: "系统设置", path: "/settings", icon: Setting }],
   },
 ];
 
 const pageTitle = computed(() => (route.meta.title as string) ?? "TikSpark Pro");
+const pageCategory = computed(() => {
+  for (const group of navGroups) {
+    if (group.items.some((item) => item.path === route.path)) {
+      return group.label;
+    }
+  }
+  return "TikSpark Pro";
+});
 
 const tokenDialogVisible = ref(false);
 const tokenDraft = ref(getAdminToken());
@@ -90,61 +100,73 @@ function logoutToken() {
 <template>
   <div class="shell">
     <aside class="sidebar">
-      <div class="sidebar-main">
-        <div>
-          <div class="brand-mark">TS</div>
-          <div class="brand-title">TikSpark Pro</div>
-          <div class="brand-subtitle">凭证托管与关系维护面板</div>
+      <div>
+        <div class="brand-section">
+          <div class="brand-logo">TS</div>
+          <div class="brand-info">
+            <div class="brand-title">TikSpark Pro</div>
+            <div class="brand-badge">自动续火花面板</div>
+          </div>
         </div>
 
         <nav class="nav">
-          <template v-for="group in navGroups" :key="group.label">
+          <div v-for="group in navGroups" :key="group.label">
             <div class="nav-group-label">{{ group.label }}</div>
-            <button
-              v-for="item in group.items"
-              :key="item.path"
-              class="nav-item"
-              :class="{ active: route.path === item.path }"
-              @click="router.push(item.path)"
-            >
-              <el-icon><component :is="item.icon" /></el-icon>
-              <span>{{ item.label }}</span>
-            </button>
-          </template>
+            <div class="nav-group-items">
+              <button
+                v-for="item in group.items"
+                :key="item.path"
+                class="nav-item"
+                :class="{ active: route.path === item.path }"
+                @click="router.push(item.path)"
+              >
+                <el-icon><component :is="item.icon" /></el-icon>
+                <span>{{ item.label }}</span>
+              </button>
+            </div>
+          </div>
         </nav>
       </div>
 
-      <div class="sidebar-note">
-        请仅用于个人账号的少量关系维护。上云部署时建议配置管理员令牌，并先关闭自动调度完成检查。
+      <div class="sidebar-footer">
+        <div class="sidebar-tip-card">
+          💡 提示：Cookie 加密存储，执行时自动模拟真人行为并自动保活。
+        </div>
       </div>
     </aside>
 
     <main class="main-panel">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">Workspace</p>
+        <div class="page-header-left">
+          <span class="page-category">{{ pageCategory }}</span>
           <h1>{{ pageTitle }}</h1>
         </div>
         <div class="topbar-actions">
-          <el-button :icon="Key" plain @click="tokenDialogVisible = true">
-            {{ hasToken ? "管理员已解锁" : "管理员令牌" }}
+          <el-button
+            :type="hasToken ? 'success' : 'default'"
+            :icon="hasToken ? Unlock : Lock"
+            plain
+            size="default"
+            @click="tokenDialogVisible = true"
+          >
+            {{ hasToken ? "管理员已解锁" : "输入访问令牌" }}
           </el-button>
-          <el-button v-if="hasToken" plain @click="logoutToken">退出</el-button>
+          <el-button v-if="hasToken" plain size="default" @click="logoutToken">退出</el-button>
         </div>
       </header>
+
       <router-view />
     </main>
 
-    <el-dialog v-model="tokenDialogVisible" title="管理员访问令牌" width="420px">
+    <el-dialog v-model="tokenDialogVisible" title="管理员安全令牌" width="440px">
       <p class="dialog-hint">
-        如果云服务器配置了 <span class="mono">TIKSPARK_ADMIN_TOKEN</span>，这里需要填写同一个令牌。
-        本地未配置令牌时可以留空。
+        若服务器配置了 <span class="mono">TIKSPARK_ADMIN_TOKEN</span>，请输入相同令牌解锁写操作与敏感接口。
       </p>
       <el-input
         v-model="tokenDraft"
         type="password"
         show-password
-        placeholder="输入管理员令牌"
+        placeholder="输入管理员访问令牌"
         @keyup.enter="saveToken"
       />
       <template #footer>
