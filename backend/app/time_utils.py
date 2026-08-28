@@ -7,13 +7,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 BEIJING_UTC_OFFSET = timedelta(hours=8)
 
 
 def beijing_now() -> datetime:
-    return datetime.utcnow() + BEIJING_UTC_OFFSET
+    return (datetime.now(timezone.utc) + BEIJING_UTC_OFFSET).replace(tzinfo=None)
 
 
 def from_beijing_epoch(epoch_seconds: float) -> datetime:
@@ -21,4 +21,5 @@ def from_beijing_epoch(epoch_seconds: float) -> datetime:
 
     适用于 Cookie 过期时间等“绝对时刻”字段。
     """
-    return datetime.utcfromtimestamp(epoch_seconds) + BEIJING_UTC_OFFSET
+    return (datetime.fromtimestamp(epoch_seconds, tz=timezone.utc) + BEIJING_UTC_OFFSET).replace(tzinfo=None)
+

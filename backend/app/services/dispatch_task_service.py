@@ -5,6 +5,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import DispatchLock, DispatchSource, DispatchTask, Friend, RunStatus
@@ -20,7 +21,7 @@ class DispatchLockHandle:
     owner: str
 
 
-def acquire_dispatch_lock(db: Session, ttl_seconds: int = 3600) -> DispatchLockHandle | None:
+def acquire_dispatch_lock(db: Session, ttl_seconds: int = 300) -> DispatchLockHandle | None:
     now = get_local_now()
     owner = f"{socket.gethostname()}:{uuid.uuid4().hex}"
     existing = db.get(DispatchLock, DISPATCH_LOCK_NAME)

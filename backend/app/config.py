@@ -17,12 +17,13 @@ class Settings(BaseSettings):
     )
     scheduler_enabled: bool = True
     scheduler_cron: str = "0 */6 * * *"
-    scheduler_scan_interval_seconds: int = 60
+    scheduler_scan_interval_seconds: int = 180
     manual_review_mode: bool = False
     default_schedule_window: str = "06:00-08:00"
     admin_token: str = ""
-    dispatch_jitter_min_seconds: int = 60
-    dispatch_jitter_max_seconds: int = 300
+    dispatch_jitter_min_seconds: int = 15
+    dispatch_jitter_max_seconds: int = 45
+
 
     model_config = SettingsConfigDict(
         env_prefix="TIKSPARK_",

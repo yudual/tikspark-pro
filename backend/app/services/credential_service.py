@@ -204,8 +204,26 @@ class CredentialService:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
                 headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-infobars",
+                    "--window-size=1440,960",
+                    "--mute-audio",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-breakpad",
+                    "--disable-renderer-backgrounding",
+                ],
             )
+
             context = browser.new_context(
                 viewport={"width": 1440, "height": 960},
                 user_agent=(
@@ -430,14 +448,12 @@ class CredentialService:
             .all()
         )
         existing_by_dy_id = {friend.friend_dy_id: friend for friend in current_friends}
-        incoming_ids = {item.display_id for item in incoming_friends if item.display_id}
 
-        for friend in current_friends:
-            if friend.friend_dy_id not in incoming_ids:
-                db.delete(friend)
-
-        synced: list[Friend] = []
+        # 安全合并：只新增或更新好友信息，绝不破坏性物理删除历史好友记录
+        now = beijing_now()
         for item in incoming_friends:
+            if not item.display_id:
+                continue
             existing = existing_by_dy_id.get(item.display_id)
             if existing is None:
                 existing = Friend(
@@ -445,7 +461,7 @@ class CredentialService:
                     friend_dy_id=item.display_id,
                     friend_nickname=item.nickname or item.display_id,
                     friend_avatar=item.avatar_url,
-                    last_synced_at=beijing_now(),
+                    last_synced_at=now,
                 )
                 db.add(existing)
                 db.flush()
@@ -456,13 +472,22 @@ class CredentialService:
                         message_content=DEFAULT_MESSAGE,
                     )
                 )
+                existing_by_dy_id[item.display_id] = existing
             else:
-                existing.friend_nickname = item.nickname or existing.friend_nickname
-                existing.friend_avatar = item.avatar_url or existing.friend_avatar
-                existing.last_synced_at = beijing_now()
-            synced.append(existing)
+                if item.nickname:
+                    existing.friend_nickname = item.nickname
+                if item.avatar_url:
+                    existing.friend_avatar = item.avatar_url
+                existing.last_synced_at = now
 
-        return synced
+        db.flush()
+        return (
+            db.query(Friend)
+            .options(selectinload(Friend.message))
+            .filter(Friend.account_id == account.id)
+            .all()
+        )
+
 
     def _find_self_candidate(
         self, account: Account, friends: list[UserCandidate], parsed: ParsedCredential

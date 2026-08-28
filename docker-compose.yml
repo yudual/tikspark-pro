@@ -5,12 +5,17 @@ services:
     restart: unless-stopped
     ports:
       - "8010:8010"
+    shm_size: 512m
     environment:
       - TIKSPARK_SQLITE_PATH=/app/backend/data/tikspark.db
       - TIKSPARK_SECRET_KEY_PATH=/app/backend/data/secret.key
       - TIKSPARK_SCHEDULER_ENABLED=false
+      - TIKSPARK_SCHEDULER_SCAN_INTERVAL_SECONDS=180
+      - TIKSPARK_DISPATCH_JITTER_MIN_SECONDS=15
+      - TIKSPARK_DISPATCH_JITTER_MAX_SECONDS=45
       # Change this before exposing the app. Use the same value in the web UI.
       - TIKSPARK_ADMIN_TOKEN=change-this-token
       - TIKSPARK_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]
     volumes:
       - ./backend/data:/app/backend/data
+

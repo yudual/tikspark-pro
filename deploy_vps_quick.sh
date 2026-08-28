@@ -10,7 +10,21 @@ echo "=================================================="
 echo "    TikSpark Pro 国内低配 VPS 极速安装助手       "
 echo "=================================================="
 
+# 0. 检查并配置 Swap 虚拟内存 (防止 1C1G/2C2G 弱机 Chromium 内存毛刺 OOM 强杀)
+SWAP_TOTAL=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}' || echo "0")
+if [ "${SWAP_TOTAL:-0}" -lt 512 ] && [ "$(id -u)" -eq 0 -o -n "$(command -v sudo)" ]; then
+    echo "[+] 检测到当前机器 Swap < 512MB，正在配置 1.5GB 虚拟内存以防止 OOM 崩溃..."
+    if [ ! -f /swapfile ]; then
+        (sudo fallocate -l 1.5G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=1536) && \
+        sudo chmod 600 /swapfile && \
+        sudo mkswap /swapfile && \
+        sudo swapon /swapfile 2>/dev/null || true
+        echo "[✓] 1.5GB Swap 虚拟内存挂载成功。"
+    fi
+fi
+
 # 1. 检查 Python 3
+
 if ! command -v python3 &>/dev/null; then
     echo "[!] 未检测到 Python 3，正在安装系统依赖..."
     if command -v apt-get &>/dev/null; then

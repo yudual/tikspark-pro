@@ -159,5 +159,27 @@ class DispatchServiceTests(unittest.TestCase):
         self.assertIsNone(self.friend.next_run_at)
 
 
+    def test_cookie_refreshed_even_on_failure(self):
+        with (
+            patch.object(
+                dispatch_service,
+                "execution_service",
+                FakeExecution(SimpleNamespace(success=False, summary="未找到好友", details="未找到好友", refreshed_cookies="new-refreshed-cookie")),
+            ),
+            patch.object(
+                dispatch_service,
+                "get_settings",
+                return_value=_settings(),
+            ),
+        ):
+            dispatch_service.dispatch_active_messages(self.db)
+
+        self.db.refresh(self.account)
+        self.assertIsNotNone(self.account.cookie_updated_at)
+        self.assertTrue(self.account.cookie_text.startswith("fernet:"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

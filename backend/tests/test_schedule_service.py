@@ -4,7 +4,7 @@
 """
 
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from backend.app.services.schedule_service import (
     compute_friend_next_run_at,
@@ -76,10 +76,12 @@ class FriendScheduleTests(unittest.TestCase):
 class LocalNowTests(unittest.TestCase):
     def test_local_now_is_beijing_naive(self):
         now = get_local_now()
-        utc_now = datetime.utcnow()
+        utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
         delta = (now - utc_now).total_seconds()
         self.assertGreater(delta, 7 * 3600)
         self.assertLess(delta, 9 * 3600)
+
+
 
 
 if __name__ == "__main__":

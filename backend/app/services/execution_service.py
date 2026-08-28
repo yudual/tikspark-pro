@@ -181,10 +181,21 @@ class ExecutionService:
         with sync_playwright() as playwright:
             browser_args = [
                 "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
                 "--disable-infobars",
                 "--window-size=1440,960",
+                "--mute-audio",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-breakpad",
+                "--disable-renderer-backgrounding",
             ]
             proxy_settings = None
             if account.proxy_url:
@@ -211,13 +222,32 @@ class ExecutionService:
             context.add_cookies(cookies)
             page = context.new_page()
 
+            def _get_context_cookies() -> str | None:
+                try:
+                    c = context.cookies()
+                    if c:
+                        return json.dumps(c, ensure_ascii=False)
+                except Exception:
+                    pass
+                return None
+
             try:
                 # 1. 访问消息页面
                 page.goto("https://www.douyin.com/chat", timeout=60000, wait_until="domcontentloaded")
-                time.sleep(random.uniform(2.5, 4.0))
+                time.sleep(random.uniform(2.0, 3.5))
 
-                # 1.5 关闭非登录弹窗（如“是否保存登录信息”），避免遮挡列表和输入框
+                # 1.5 关闭非登录弹窗
                 self._dismiss_dialogs(page)
+
+                # 检查 WAF / 滑块验证码 / 空白页
+                waf_issue = self._check_waf_or_captcha(page)
+                if waf_issue:
+                    return ExecutionResult(
+                        False,
+                        "页面被风控拦截",
+                        waf_issue,
+                        refreshed_cookies=_get_context_cookies(),
+                    )
 
                 # 检查登录状态
                 if self._check_login_required(page):
@@ -225,30 +255,48 @@ class ExecutionService:
                         False,
                         "账号凭证已失效",
                         "检测到抖音网页弹出登录对话框，Cookie 凭证已过期或被风控失效，请重新获取并更新 Cookie。",
+                        refreshed_cookies=_get_context_cookies(),
                     )
 
-                # 2. 寻找好友（多层策略：精准匹配 -> 模糊/归一化匹配 -> 列表区域滚动 -> 搜索框清理检索 -> 兜底刷新）
+                # 2. 寻找好友（左侧列表匹配 -> 滚动加载 -> 搜索框检索 -> 主页发私信直连兜底）
                 target_name = friend.friend_nickname
                 target_dy_id = friend.friend_dy_id
 
                 friend_item = self._find_friend(page, target_name, target_dy_id)
-                if friend_item is None:
-                    return ExecutionResult(
-                        False,
-                        "未找到好友",
-                        f"在消息列表中未定位到好友 {target_name} ({target_dy_id})，请确认好友是否在抖音私信列表中或昵称已变更。",
-                    )
-
-                try:
-                    friend_item.click(timeout=4000)
-                except Exception:
-                    page.evaluate("(el) => el.click()", friend_item.element_handle())
-                time.sleep(random.uniform(1.8, 3.0))
+                if friend_item is not None:
+                    try:
+                        friend_item.click(timeout=4000)
+                    except Exception:
+                        page.evaluate("(el) => el.click()", friend_item.element_handle())
+                    time.sleep(random.uniform(1.5, 2.5))
+                else:
+                    # 左侧列表中未定位到（常见于几天未聊天的 App 好友），尝试通过用户个人主页直接唤起私信会话
+                    opened_dm = self._open_user_profile_and_chat(page, target_name, target_dy_id)
+                    if not opened_dm:
+                        waf_issue = self._check_waf_or_captcha(page)
+                        if waf_issue:
+                            return ExecutionResult(
+                                False,
+                                "页面被风控拦截",
+                                waf_issue,
+                                refreshed_cookies=_get_context_cookies(),
+                            )
+                        return ExecutionResult(
+                            False,
+                            "未找到好友",
+                            f"在消息列表与用户主页均未定位到好友 {target_name} ({target_dy_id})，请确认好友是否在抖音私信列表中或抖音号/ID是否正确。",
+                            refreshed_cookies=_get_context_cookies(),
+                        )
 
                 # 3. 输入并发送消息：文本拟人打字，[火花] 占位符走表情面板直接发送（带自动文字兜底）
                 input_box = self._find_input_box(page)
                 if not input_box:
-                    return ExecutionResult(False, "未找到输入框", "无法定位到私信聊天输入框")
+                    return ExecutionResult(
+                        False,
+                        "未找到输入框",
+                        "无法定位到私信聊天输入框",
+                        refreshed_cookies=_get_context_cookies(),
+                    )
 
                 segments = split_spark_content(content)
                 pending_text: list[str] = []
@@ -275,13 +323,19 @@ class ExecutionService:
                                     False,
                                     "发送文本失败",
                                     f"已向 {target_name} 输入文本 {text_content!r} 但未能确认发送结果。",
+                                    refreshed_cookies=_get_context_cookies(),
                                 )
                             pending_text = []
                             time.sleep(random.uniform(0.8, 1.5))
 
                         ok, reason, used_fallback = self._send_spark_sticker(page, input_box)
                         if not ok:
-                            return ExecutionResult(False, "发送火花表情失败", reason)
+                            return ExecutionResult(
+                                False,
+                                "发送火花表情失败",
+                                reason,
+                                refreshed_cookies=_get_context_cookies(),
+                            )
                         spark_count += 1
                         if used_fallback:
                             fallback_spark_used = True
@@ -293,15 +347,11 @@ class ExecutionService:
                             False,
                             "发送文本失败",
                             f"已向 {target_name} 输入文本 {text_content!r} 但未能确认发送结果。",
+                            refreshed_cookies=_get_context_cookies(),
                         )
 
                 # 4. 抓取浏览器当前上下文中的最新 Cookie，实现会话自动保活
-                try:
-                    current_cookies = context.cookies()
-                    if current_cookies:
-                        refreshed_cookies = json.dumps(current_cookies, ensure_ascii=False)
-                except Exception:
-                    pass
+                refreshed_cookies = _get_context_cookies()
 
                 evidence = []
                 if segments:
@@ -322,9 +372,127 @@ class ExecutionService:
                 )
 
             except Exception as e:
-                return ExecutionResult(False, "执行异常", str(e))
+                return ExecutionResult(
+                    False,
+                    "执行异常",
+                    str(e),
+                    refreshed_cookies=_get_context_cookies(),
+                )
             finally:
                 browser.close()
+
+
+    def _check_waf_or_captcha(self, page: Page) -> str | None:
+        """检查页面是否被 WAF 拦截、滑块验证码或页面空白。"""
+        try:
+            content = page.content()
+            if len(content) < 500:
+                return "检测到页面内容异常过短或空白，可能被抖音 WAF 安全风控拦截或网络慢。"
+
+            captcha_selectors = (
+                "#captcha_container",
+                ".captcha-verify-image",
+                ".captcha_verify_container",
+                "[class*='captcha']",
+                "[id*='captcha']",
+                ".verify-bar",
+                ".sec-captcha",
+                "iframe[src*='captcha']",
+            )
+            for selector in captcha_selectors:
+                loc = page.locator(selector).first
+                if loc.count() and loc.is_visible():
+                    return "检测到抖音安全验证码/滑块风控拦截，请人工在浏览器中完成验证或配置代理 IP。"
+        except Exception:
+            pass
+        return None
+
+    def _open_user_profile_and_chat(self, page: Page, target_name: str, dy_id: str) -> bool:
+        """多级兜底：如果最近会话列表中找不到好友，通过用户个人主页或搜索唤起私信会话。
+
+        彻底解决几天未聊天好友在网页端最近列表中沉底的问题。
+        """
+        if not dy_id and not target_name:
+            return False
+
+        try:
+            # 策略 A: 若 ID 是加密 sec_uid（以 MS4w 开头或超长串），直接直连个人主页
+            if dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
+                user_url = f"https://www.douyin.com/user/{dy_id}"
+                page.goto(user_url, timeout=35000, wait_until="domcontentloaded")
+                time.sleep(random.uniform(2.0, 3.5))
+                self._dismiss_dialogs(page)
+
+                chat_btn_selectors = [
+                    'button:has-text("私信")',
+                    'button:has-text("发私信")',
+                    'div[role="button"]:has-text("私信")',
+                    'div[role="button"]:has-text("发私信")',
+                    '[data-e2e="user-chat-button"]',
+                    '[data-e2e="user-info-chat"]',
+                    '[class*="chat-btn"]',
+                    '[class*="message-btn"]',
+                    '[class*="chatBtn"]',
+                    '[class*="msg-btn"]',
+                    '.semi-button:has-text("私信")',
+                ]
+                for selector in chat_btn_selectors:
+                    try:
+                        btn = page.locator(selector).first
+                        if btn.count() and btn.is_visible():
+                            btn.click(timeout=3000)
+                            time.sleep(random.uniform(1.8, 3.0))
+                            if self._find_input_box(page):
+                                return True
+                    except Exception:
+                        continue
+
+            # 策略 B: 尝试通过抖音全站用户搜索定位好友
+            search_query = dy_id if (dy_id and not dy_id.startswith("MS4w") and dy_id != target_name) else target_name
+            if search_query:
+                clean_query = normalize_friend_name(search_query) or search_query.strip()
+                search_url = f"https://www.douyin.com/search/{clean_query}?type=user"
+                page.goto(search_url, timeout=35000, wait_until="domcontentloaded")
+                time.sleep(random.uniform(2.5, 4.0))
+                self._dismiss_dialogs(page)
+
+                # 1. 尝试直接点击卡片中的"私信"按钮
+                for selector in ['button:has-text("私信")', 'button:has-text("发私信")', '[class*="chat"] button']:
+                    try:
+                        btn = page.locator(selector).first
+                        if btn.count() and btn.is_visible():
+                            btn.click(timeout=3000)
+                            time.sleep(random.uniform(1.8, 3.0))
+                            if self._find_input_box(page):
+                                return True
+                    except Exception:
+                        continue
+
+                # 2. 尝试点击匹配的用户进入主页再发私信
+                norm_name = normalize_friend_name(target_name)
+                for candidate in page.locator("[class*='user-info'], [class*='user-item'], [class*='search-result-card']").all()[:5]:
+                    try:
+                        card_text = candidate.inner_text(timeout=1000) or ""
+                        if target_name in card_text or (norm_name and norm_name in normalize_friend_name(card_text)):
+                            candidate.click(timeout=3000)
+                            time.sleep(2.5)
+                            self._dismiss_dialogs(page)
+                            for selector in ['button:has-text("私信")', 'button:has-text("发私信")']:
+                                try:
+                                    btn = page.locator(selector).first
+                                    if btn.count() and btn.is_visible():
+                                        btn.click(timeout=3000)
+                                        time.sleep(2.0)
+                                        if self._find_input_box(page):
+                                            return True
+                                except Exception:
+                                    continue
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return False
 
     def _check_login_required(self, page: Page) -> bool:
         """检查页面是否出现了登录遮罩或登录表单。"""
@@ -336,6 +504,7 @@ class ExecutionService:
         except Exception:
             pass
         return False
+
 
     def _dismiss_dialogs(self, page: Page) -> None:
         """关闭非登录弹窗，绝不触碰登录弹窗。"""

@@ -52,8 +52,11 @@ def sanitize_retry_cooldown_minutes(value: int | None) -> int:
     return max(1, int(value or 30))
 
 
+from ..time_utils import beijing_now
+
+
 def get_local_now() -> datetime:
-    return datetime.utcnow() + timedelta(hours=8)
+    return beijing_now()
 
 
 def compute_next_run_at(window: str | None, now: datetime | None = None) -> datetime:
@@ -100,6 +103,8 @@ def compute_retry_run_at(
 ) -> datetime:
     current = now or get_local_now()
     return current + timedelta(minutes=sanitize_retry_cooldown_minutes(retry_cooldown_minutes))
+
+
 
 
 def _parse_window(window: str) -> tuple[time, time]:

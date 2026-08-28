@@ -281,6 +281,8 @@ def _run_friend_task(
     if result.summary in ("账号凭证已失效", "凭证失效"):
         friend.account.status = AccountStatus.invalid
         friend.account.status_reason = result.details
+    elif result.summary == "页面被风控拦截":
+        friend.account.status_reason = f"风控提示: {result.details}"
 
     if result.success:
         global_state.last_success_at = current_time
@@ -365,6 +367,7 @@ def _mark_friend_run(friend: Friend, current_time: datetime, result_status: RunS
             )
             return
 
+
     friend.consecutive_failures = 0
     friend.next_run_at = compute_friend_next_run_at(
         schedule_window=friend.schedule_window,
@@ -373,3 +376,4 @@ def _mark_friend_run(friend: Friend, current_time: datetime, result_status: RunS
         cooldown_minutes=friend.cooldown_minutes,
         last_run_at=friend.last_run_at,
     )
+
