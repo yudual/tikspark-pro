@@ -7,7 +7,7 @@ __pycache__
 *.log
 runtime-logs
 frontend/node_modules
-frontend/dist
+# frontend/dist (needed for Docker build)
 backend/data
 backend/data/*.db-journal
 backend/data/*.db-wal
