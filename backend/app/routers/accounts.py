@@ -11,6 +11,7 @@ from ..schemas import (
     AccountResponse,
     AccountUpdateRequest,
     BatchDeleteFriendsRequest,
+    FriendBatchImportRequest,
     FriendCreateRequest,
     FriendResponse,
     FriendScheduleUpdateRequest,
@@ -181,6 +182,20 @@ def create_custom_friend(
     try:
         friend = credential_service.add_custom_friend(db, account, payload)
         return _serialize_friend(friend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{account_id}/friends/batch-import", status_code=status.HTTP_200_OK)
+def batch_import_friends(
+    account_id: int, payload: FriendBatchImportRequest, db: Session = Depends(get_db)
+) -> dict:
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    try:
+        count = credential_service.batch_import_friends(db, account, payload)
+        return {"message": f"成功批量导入 {count} 位好友！", "imported_count": count}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

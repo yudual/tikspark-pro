@@ -12,7 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from ..models import Account, AccountStatus, Friend, Message, MessageType
-from ..schemas import AccountCheckResult, FriendCreateRequest, FriendUpdateRequest
+from ..schemas import (
+    AccountCheckResult,
+    FriendBatchImportRequest,
+    FriendCreateRequest,
+    FriendUpdateRequest,
+)
 from ..time_utils import beijing_now, from_beijing_epoch
 from .app_settings_service import get_default_schedule_window
 from .execution_service import PLAYWRIGHT_STEALTH_SCRIPT
@@ -144,7 +149,7 @@ class CredentialService:
         account.cookie_updated_at = now
         account.status = sync_result.status
         account.status_reason = (
-            f"已同步 {len(friends)} 位联系人 (包含会话与全网通讯录)。"
+            f"已同步 {len(friends)} 位关注与互关好友。"
             if friends
             else sync_result.status_reason
         )
@@ -201,7 +206,7 @@ class CredentialService:
 
         account.status = sync_result.status
         account.status_reason = (
-            f"已同步 {len(friends)} 位联系人 (包含会话与全网通讯录)。"
+            f"已同步 {len(friends)} 位关注与互关好友。"
             if friends
             else sync_result.status_reason
         )
@@ -344,6 +349,99 @@ class CredentialService:
         db.commit()
         db.refresh(friend)
         return friend
+
+    def batch_import_friends(
+        self, db: Session, account: Account, payload: FriendBatchImportRequest
+    ) -> int:
+        """批量导入好友（支持多行粘贴昵称/抖音号/sec_uid）。"""
+        lines = [line.strip() for line in payload.raw_text.splitlines() if line.strip()]
+        if not lines:
+            return 0
+
+        schedule_window = validate_schedule_window(payload.schedule_window)
+        now = beijing_now()
+        imported_count = 0
+
+        for line in lines:
+            # 支持常见分隔符：空格、逗号、制表符
+            tokens = re.split(r"[\s,\t|]+", line)
+            tokens = [t.strip() for t in tokens if t.strip()]
+            if not tokens:
+                continue
+
+            if len(tokens) >= 2:
+                nickname = tokens[0]
+                dy_id = tokens[1]
+            else:
+                raw = tokens[0]
+                nickname = raw
+                dy_id = raw
+
+            existing = (
+                db.query(Friend)
+                .filter(Friend.account_id == account.id, Friend.friend_dy_id == dy_id)
+                .first()
+            )
+            if existing:
+                existing.friend_nickname = nickname
+                existing.is_active = payload.is_active
+                existing.schedule_window = schedule_window
+                existing.frequency_days = payload.frequency_days
+                existing.cooldown_minutes = payload.cooldown_minutes
+                existing.retry_limit = payload.retry_limit
+                existing.retry_cooldown_minutes = payload.retry_cooldown_minutes
+                if payload.is_active:
+                    existing.next_run_at = compute_friend_next_run_at(
+                        schedule_window=schedule_window,
+                        now=get_local_now(),
+                        frequency_days=payload.frequency_days,
+                        cooldown_minutes=payload.cooldown_minutes,
+                        last_run_at=existing.last_run_at,
+                    )
+                if existing.message:
+                    existing.message.message_type = payload.message_type
+                    existing.message.message_content = payload.message_content
+                else:
+                    existing.message = Message(
+                        friend_id=existing.id,
+                        message_type=payload.message_type,
+                        message_content=payload.message_content,
+                    )
+            else:
+                friend = Friend(
+                    account_id=account.id,
+                    friend_dy_id=dy_id,
+                    friend_nickname=nickname,
+                    friend_avatar="",
+                    is_active=payload.is_active,
+                    schedule_window=schedule_window,
+                    frequency_days=payload.frequency_days,
+                    cooldown_minutes=payload.cooldown_minutes,
+                    retry_limit=payload.retry_limit,
+                    retry_cooldown_minutes=payload.retry_cooldown_minutes,
+                    last_synced_at=now,
+                )
+                if payload.is_active:
+                    friend.next_run_at = compute_friend_next_run_at(
+                        schedule_window=schedule_window,
+                        now=get_local_now(),
+                        frequency_days=payload.frequency_days,
+                        cooldown_minutes=payload.cooldown_minutes,
+                    )
+                db.add(friend)
+                db.flush()
+                db.add(
+                    Message(
+                        friend_id=friend.id,
+                        message_type=payload.message_type,
+                        message_content=payload.message_content or DEFAULT_MESSAGE,
+                    )
+                )
+            imported_count += 1
+
+        db.commit()
+        db.refresh(account)
+        return imported_count
 
     def update_friend(self, db: Session, friend: Friend, payload: FriendUpdateRequest) -> Friend:
         """修改指定好友的配置（昵称、抖音号、头像、计划策略与消息）。"""
@@ -494,6 +592,10 @@ class CredentialService:
                 if source == "dom_self":
                     self_score += 50
 
+                # 互相关注/好友权重提升
+                if obj.get("follow_status") == 2 or obj.get("is_friend") is True:
+                    self_score += 1
+
                 candidate = UserCandidate(
                     uid=uid,
                     display_id=display_id,
@@ -545,12 +647,16 @@ class CredentialService:
                     if not any(
                         k in url
                         for k in (
-                            "im/",
-                            "user/",
+                            "following/list",
+                            "follower/list",
+                            "user/friend",
+                            "im/user",
+                            "im/spotlight",
+                            "im/chat",
                             "relation/",
                             "conversation/",
                             "contact/",
-                            "aweme/v1/web/",
+                            "aweme/v1/web/user",
                             "session/",
                             "chat/",
                             "follow",
@@ -565,18 +671,62 @@ class CredentialService:
             page.on("response", on_response)
 
             try:
-                # 1. 访问消息页面抓取聊天会话与联系人
-                page.goto("https://www.douyin.com/chat", timeout=60000, wait_until="domcontentloaded")
+                # -------------------------------------------------------------
+                # 引擎一：首先访问个人主页，获取自身资料并主动展开「关注列表」与「粉丝列表」
+                # -------------------------------------------------------------
+                page.goto("https://www.douyin.com/user/self", timeout=50000, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
 
-                for _ in range(8):
-                    page.mouse.wheel(0, 500)
-                    page.wait_for_timeout(400)
+                # 提取自身主页资料
+                self_data = page.evaluate(
+                    """() => {
+                    return {
+                        nickname: document.querySelector('[data-e2e="user-info-nickname"]')?.innerText?.trim(),
+                        unique_id: document.querySelector('[data-e2e="user-info-id"]')?.innerText?.replace('抖音号：', '')?.trim(),
+                        avatar_url: document.querySelector('[data-e2e="user-avatar"] img')?.src || ''
+                    };
+                }"""
+                )
+                if self_data and (self_data.get("nickname") or self_data.get("unique_id")):
+                    uid = parsed.uid or "self"
+                    candidates[uid] = UserCandidate(
+                        uid=uid,
+                        display_id=self_data.get("unique_id") or "",
+                        nickname=self_data.get("nickname") or "抖音账号",
+                        avatar_url=self_data.get("avatar_url") or "",
+                        remark="",
+                        source="dom_self",
+                        self_score=100,
+                    )
 
-                dom_contacts = page.evaluate(
+                # 主动点击并展开「关注」弹窗
+                following_selectors = [
+                    '[data-e2e="user-following"]',
+                    '[data-e2e="user-info-following"]',
+                    'a[href*="following"]',
+                    'div:has-text("关注")',
+                    'span:has-text("关注")',
+                ]
+                for sel in following_selectors:
+                    try:
+                        loc = page.locator(sel).first
+                        if loc.count() and loc.is_visible():
+                            loc.click(timeout=2500)
+                            page.wait_for_timeout(2000)
+                            break
+                    except Exception:
+                        continue
+
+                # 滚动弹窗或页面以加载更多关注/互关列表
+                for _ in range(12):
+                    page.mouse.wheel(0, 800)
+                    page.wait_for_timeout(350)
+
+                # 从关注列表中直接提取 DOM 卡片
+                dom_following = page.evaluate(
                     """() => {
                     const list = [];
-                    const items = document.querySelectorAll('[data-e2e*="im"], [class*="conversation"], [class*="user-item"], [class*="chat-item"], [class*="session"], .semi-table-row, [class*="contact"]');
+                    const items = document.querySelectorAll('[class*="user-card"], [class*="follow-item"], [class*="user-item"], [class*="focus-item"], [class*="contact-item"], .semi-table-row, li[role="listitem"]');
                     items.forEach(el => {
                         const nameEl = el.querySelector('[class*="name"], [class*="title"], strong, [data-e2e*="name"]') || el;
                         const avatarImg = el.querySelector('img');
@@ -587,22 +737,123 @@ class CredentialService:
                         if (link && link.includes('/user/')) {
                             uid = link.split('/user/')[1]?.split('?')[0] || '';
                         }
-                        if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('抖音消息') && !rawText.includes('系统通知')) {
+                        if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('抖音') && !rawText.includes('关注')) {
                             list.push({
                                 nickname: rawText,
                                 avatar_url: avatar,
                                 uid: uid || rawText,
                                 display_id: uid || rawText,
-                                source: 'dom_chat'
+                                source: 'dom_following'
                             });
                         }
                     });
                     return list;
                 }"""
                 )
-                for item in dom_contacts:
-                    capture_candidate(item, "dom_chat")
+                for item in dom_following:
+                    capture_candidate(item, "dom_following")
 
+                # -------------------------------------------------------------
+                # 引擎二：在浏览器内直接通过 fetch 发起关系链全量翻页拉取
+                # -------------------------------------------------------------
+                api_in_page_data = page.evaluate(
+                    """async () => {
+                    const payloads = [];
+                    // 1. 翻页拉取所有关注好友 (互关好友都在关注列表中)
+                    try {
+                        let max_time = 0;
+                        for (let i = 0; i < 10; i++) {
+                            const resp = await fetch(`/aweme/v1/web/user/following/list/?count=50&max_time=${max_time}`, {
+                                headers: { 'Accept': 'application/json' }
+                            });
+                            if (!resp.ok) break;
+                            const json = await resp.json();
+                            payloads.push(json);
+                            if (!json.has_more || !json.followings || json.followings.length === 0) break;
+                            max_time = json.max_time || json.cursor || 0;
+                        }
+                    } catch (e) {}
+
+                    // 2. 翻页拉取粉丝列表中的互关好友
+                    try {
+                        let max_time = 0;
+                        for (let i = 0; i < 6; i++) {
+                            const resp = await fetch(`/aweme/v1/web/user/follower/list/?count=50&max_time=${max_time}`, {
+                                headers: { 'Accept': 'application/json' }
+                            });
+                            if (!resp.ok) break;
+                            const json = await resp.json();
+                            payloads.push(json);
+                            if (!json.has_more || !json.followers || json.followers.length === 0) break;
+                            max_time = json.max_time || json.cursor || 0;
+                        }
+                    } catch (e) {}
+
+                    // 3. 通讯录、星标关系与聊天会话
+                    const endpoints = [
+                        '/aweme/v1/web/im/spotlight/relation/',
+                        '/aweme/v1/web/im/user/friends/',
+                        '/aweme/v1/web/im/chat/conversations/',
+                        '/aweme/v1/web/im/contacts/'
+                    ];
+                    for (const ep of endpoints) {
+                        try {
+                            const resp = await fetch(ep, { headers: { 'Accept': 'application/json' } });
+                            if (resp.ok) {
+                                payloads.push(await resp.json());
+                            }
+                        } catch (e) {}
+                    }
+                    return payloads;
+                }"""
+                )
+                if api_in_page_data:
+                    for payload in api_in_page_data:
+                        extract_deep(payload, "in_page_api")
+
+                # -------------------------------------------------------------
+                # 引擎三：访问私信页面 /chat 作为补充
+                # -------------------------------------------------------------
+                try:
+                    page.goto("https://www.douyin.com/chat", timeout=35000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2500)
+                    for _ in range(6):
+                        page.mouse.wheel(0, 500)
+                        page.wait_for_timeout(300)
+
+                    dom_contacts = page.evaluate(
+                        """() => {
+                        const list = [];
+                        const items = document.querySelectorAll('[data-e2e*="im"], [class*="conversation"], [class*="user-item"], [class*="chat-item"], [class*="session"], .semi-table-row, [class*="contact"]');
+                        items.forEach(el => {
+                            const nameEl = el.querySelector('[class*="name"], [class*="title"], strong, [data-e2e*="name"]') || el;
+                            const avatarImg = el.querySelector('img');
+                            const rawText = nameEl?.innerText?.trim()?.split('\\n')[0] || '';
+                            const avatar = avatarImg?.src || '';
+                            const link = el.getAttribute('href') || el.querySelector('a')?.getAttribute('href') || '';
+                            let uid = '';
+                            if (link && link.includes('/user/')) {
+                                uid = link.split('/user/')[1]?.split('?')[0] || '';
+                            }
+                            if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('抖音消息') && !rawText.includes('系统通知')) {
+                                list.push({
+                                    nickname: rawText,
+                                    avatar_url: avatar,
+                                    uid: uid || rawText,
+                                    display_id: uid || rawText,
+                                    source: 'dom_chat'
+                                });
+                            }
+                        });
+                        return list;
+                    }"""
+                    )
+                    for item in dom_contacts:
+                        capture_candidate(item, "dom_chat")
+                except Exception:
+                    pass
+
+                # 提取 SSR 与 Storage 数据
                 ssr_data = page.evaluate(
                     """() => {
                     const data = [];
@@ -614,33 +865,6 @@ class CredentialService:
                 )
                 for item in ssr_data:
                     extract_deep(item, "ssr")
-
-                account_candidate = self._pick_account_candidate(candidates, parsed)
-
-                if not account_candidate or not account_candidate.avatar_url or account_candidate.display_id.startswith("MS4w"):
-                    page.goto("https://www.douyin.com/user/self", timeout=40000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2500)
-
-                    self_data = page.evaluate(
-                        """() => {
-                        return {
-                            nickname: document.querySelector('[data-e2e="user-info-nickname"]')?.innerText?.trim(),
-                            unique_id: document.querySelector('[data-e2e="user-info-id"]')?.innerText?.replace('抖音号：', '')?.trim(),
-                            avatar_url: document.querySelector('[data-e2e="user-avatar"] img')?.src || ''
-                        };
-                    }"""
-                    )
-                    if self_data and (self_data.get("nickname") or self_data.get("unique_id")):
-                        uid = parsed.uid or "self"
-                        candidates[uid] = UserCandidate(
-                            uid=uid,
-                            display_id=self_data.get("unique_id") or (account_candidate.display_id if account_candidate else ""),
-                            nickname=self_data.get("nickname") or (account_candidate.nickname if account_candidate else "抖音账号"),
-                            avatar_url=self_data.get("avatar_url") or (account_candidate.avatar_url if account_candidate else ""),
-                            remark="",
-                            source="dom_self",
-                            self_score=100,
-                        )
 
                 storage_candidates = page.evaluate(
                     """() => {
@@ -696,7 +920,7 @@ class CredentialService:
                 account_candidate=account_candidate,
                 friends=friends,
                 status=AccountStatus.healthy,
-                status_reason=f"已成功同步 {len(friends)} 位联系人 (包含会话与全网通讯录)。",
+                status_reason=f"已成功同步 {len(friends)} 位关注与互关好友。",
                 refreshed_cookies=refreshed_cookies,
             )
 
@@ -704,7 +928,7 @@ class CredentialService:
             account_candidate=account_candidate,
             friends=[],
             status=AccountStatus.unknown,
-            status_reason="账号资料已加载，但私信流量中暂未发现联系人（可手动添加好友）。",
+            status_reason="账号资料已加载，但未检测到关注列表（可使用手动添加或批量导入好友）。",
             refreshed_cookies=refreshed_cookies,
         )
 

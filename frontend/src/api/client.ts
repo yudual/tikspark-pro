@@ -5,6 +5,7 @@ import type {
   DashboardSummary,
   DispatchSource,
   Friend,
+  FriendBatchImportRequest,
   FriendCreateRequest,
   FriendStrategyUpdate,
   FriendUpdateRequest,
@@ -186,6 +187,12 @@ export const api = {
   },
   createFriend(accountId: number, data: FriendCreateRequest) {
     return request<Friend>(`/api/accounts/${accountId}/friends`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+  batchImportFriends(accountId: number, data: FriendBatchImportRequest) {
+    return request<{ message: string; imported_count: number }>(`/api/accounts/${accountId}/friends/batch-import`, {
       method: "POST",
       body: JSON.stringify(data),
     });

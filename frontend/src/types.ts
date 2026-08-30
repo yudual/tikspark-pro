@@ -238,6 +238,18 @@ export interface FriendUpdateRequest {
   message_content?: string;
 }
 
+export interface FriendBatchImportRequest {
+  raw_text: string;
+  schedule_window?: string;
+  is_active?: boolean;
+  frequency_days?: number;
+  cooldown_minutes?: number;
+  retry_limit?: number;
+  retry_cooldown_minutes?: number;
+  message_type?: MessageType;
+  message_content?: string;
+}
+
 export interface SystemSettingsUpdateRequest {
   default_schedule_window?: string;
   scheduler_scan_interval_seconds?: number;

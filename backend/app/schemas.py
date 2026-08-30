@@ -274,6 +274,18 @@ class BatchDeleteFriendsRequest(BaseModel):
     friend_ids: list[int]
 
 
+class FriendBatchImportRequest(BaseModel):
+    raw_text: str = Field(min_length=1)
+    schedule_window: str = "06:00-08:00"
+    is_active: bool = True
+    frequency_days: int = 1
+    cooldown_minutes: int = 0
+    retry_limit: int = 2
+    retry_cooldown_minutes: int = 30
+    message_type: MessageType = MessageType.fixed
+    message_content: str = "[火花]"
+
+
 class SystemSettingsUpdateRequest(BaseModel):
     default_schedule_window: str | None = None
     scheduler_scan_interval_seconds: int | None = Field(default=None, ge=10, le=3600)

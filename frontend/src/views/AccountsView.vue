@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, reactive } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Refresh, Key, Edit, Delete, Search, Check, Close, Aim } from "@element-plus/icons-vue";
+import { Plus, Refresh, Key, Edit, Delete, Search, Check, Close, Aim, Document, Upload } from "@element-plus/icons-vue";
 
 import { api } from "../api/client";
-import type { Account, AccountCheckResult, Friend, FriendCreateRequest, FriendUpdateRequest } from "../types";
+import type { Account, AccountCheckResult, Friend, FriendBatchImportRequest, FriendCreateRequest, FriendUpdateRequest } from "../types";
 
 const accounts = ref<Account[]>([]);
 const loading = ref(false);
@@ -18,6 +18,15 @@ const cookieDialogVisible = ref(false);
 const updatingCookie = ref(false);
 const cookieUpdateText = ref("");
 const cookieUpdateAccount = ref<Account | null>(null);
+
+const batchImportDialogVisible = ref(false);
+const batchImporting = ref(false);
+const batchImportText = ref("");
+const batchImportForm = reactive({
+  schedule_window: "06:00-08:00",
+  is_active: true,
+  message_content: "[火花]",
+});
 
 const activeTab = ref("all");
 const searchQuery = ref("");
@@ -377,6 +386,39 @@ async function submitAddFriend() {
   }
 }
 
+function openBatchImportDialog() {
+  batchImportText.value = "";
+  batchImportForm.schedule_window = "06:00-08:00";
+  batchImportForm.is_active = true;
+  batchImportForm.message_content = "[火花]";
+  batchImportDialogVisible.value = true;
+}
+
+async function submitBatchImport() {
+  if (!currentAccount.value) return;
+  if (!batchImportText.value.trim()) {
+    ElMessage.warning("请粘贴至少一行好友信息（昵称/抖音号/sec_uid）");
+    return;
+  }
+  batchImporting.value = true;
+  try {
+    const res = await api.batchImportFriends(currentAccount.value.id, {
+      raw_text: batchImportText.value,
+      schedule_window: batchImportForm.schedule_window,
+      is_active: batchImportForm.is_active,
+      message_content: batchImportForm.message_content,
+    });
+    ElMessage.success(res.message);
+    batchImportDialogVisible.value = false;
+    await loadFriends(currentAccount.value.id);
+    await loadAccounts();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "批量导入失败");
+  } finally {
+    batchImporting.value = false;
+  }
+}
+
 function openEditFriendDialog(friend: Friend) {
   editingFriendId.value = friend.id;
   editFriendForm.friend_nickname = friend.friend_nickname;
@@ -632,6 +674,7 @@ onMounted(loadAccounts);
         <div class="meta">{{ activeTotalText }}</div>
         <div class="friend-dialog-actions">
           <el-button size="small" type="primary" :icon="Plus" @click="openAddFriendDialog">添加好友</el-button>
+          <el-button size="small" type="success" plain :icon="Upload" @click="openBatchImportDialog">批量导入好友</el-button>
           <el-button size="small" plain :loading="togglingAll" :icon="Check" @click="batchToggleFriends(true)">全部激活</el-button>
           <el-button size="small" plain :loading="togglingAll" :icon="Close" @click="batchToggleFriends(false)">全部关闭</el-button>
           <el-button
@@ -645,7 +688,7 @@ onMounted(loadAccounts);
           >
             批量删除 ({{ selectedFriendIds.length }})
           </el-button>
-          <el-button size="small" type="primary" plain :loading="friendLoading" :icon="Refresh" @click="refreshFriends">重新拉取私信列表</el-button>
+          <el-button size="small" type="primary" plain :loading="friendLoading" :icon="Refresh" @click="refreshFriends">同步全量关注与好友</el-button>
         </div>
       </div>
 
@@ -760,6 +803,38 @@ onMounted(loadAccounts);
       <template #footer>
         <el-button @click="editFriendDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="editingFriend" @click="submitEditFriend">保存配置</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量导入好友弹窗 -->
+    <el-dialog v-model="batchImportDialogVisible" title="批量导入续火好友" width="620px">
+      <div class="dialog-tips">
+        💡 提示：支持一行一个好友。格式支持 <strong>【好友昵称 抖音号】</strong> 或直接粘贴 <strong>【抖音号 / sec_uid】</strong>，多列之间支持空格、逗号或制表符分隔。
+      </div>
+      <el-form label-position="top">
+        <el-form-item label="好友列表（每行一个）" required>
+          <el-input
+            v-model="batchImportText"
+            type="textarea"
+            :rows="8"
+            placeholder="示例：&#10;小明 12345678&#10;小红 MS4wLjABAAAA_xyz...&#10;张三"
+          />
+        </el-form-item>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px">
+          <el-form-item label="统一续火时段">
+            <el-input v-model="batchImportForm.schedule_window" placeholder="06:00-08:00" />
+          </el-form-item>
+          <el-form-item label="专属续火话术">
+            <el-input v-model="batchImportForm.message_content" placeholder="[火花]" />
+          </el-form-item>
+        </div>
+        <el-form-item label="导入后立即激活续火">
+          <el-switch v-model="batchImportForm.is_active" active-text="开启" inactive-text="关闭" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchImportDialogVisible = false" :disabled="batchImporting">取消</el-button>
+        <el-button type="primary" :loading="batchImporting" @click="submitBatchImport">确认批量导入</el-button>
       </template>
     </el-dialog>
   </div>

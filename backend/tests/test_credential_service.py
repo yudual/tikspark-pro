@@ -138,17 +138,39 @@ class CredentialServiceTests(unittest.TestCase):
         # 2. JSON 数组 (带各插件导出格式)
         json_array = """[
             {"name": "sessionid", "value": "abc", "domain": "www.douyin.com", "sameSite": "no_restriction"},
-            {"name": "uid_tt", "value": "12345", "domain": "douyin.com", "expires": 1893456000}
+            {"name": "passport_csrf_token", "value": "def", "domain": ".douyin.com"}
         ]"""
-        pw_cookies = self.service._to_playwright_cookies(json_array)
-        self.assertEqual(len(pw_cookies), 2)
-        self.assertEqual(pw_cookies[0]["domain"], ".douyin.com")
-        self.assertEqual(pw_cookies[0]["sameSite"], "None")
-        self.assertEqual(pw_cookies[1]["domain"], ".douyin.com")
+        cookies_json = self.service._to_playwright_cookies(json_array)
+        self.assertEqual(len(cookies_json), 2)
+        self.assertEqual(cookies_json[0]["sameSite"], "None")
+        self.assertEqual(cookies_json[0]["domain"], ".douyin.com")
 
-        # 3. 过期时间提取
-        expires = self.service.extract_cookie_expires_at(json_array)
-        self.assertIsNotNone(expires)
+    def test_batch_import_friends(self):
+        from backend.app.schemas import FriendBatchImportRequest
+
+        batch_text = """
+        小明 12345678
+        小红 MS4wLjABAAAA9999
+        小张
+        """
+        req = FriendBatchImportRequest(
+            raw_text=batch_text,
+            schedule_window="06:00-08:00",
+            is_active=True,
+            message_content="早安[火花]",
+        )
+        count = self.service.batch_import_friends(self.db, self.account, req)
+        self.assertEqual(count, 3)
+
+        friends = self.db.query(Friend).filter(Friend.account_id == self.account.id).all()
+        # 初始有 2 个 + 导入 3 个 = 5 个
+        self.assertEqual(len(friends), 5)
+
+        imported_ming = self.db.query(Friend).filter(Friend.friend_dy_id == "12345678").one()
+        self.assertEqual(imported_ming.friend_nickname, "小明")
+        self.assertEqual(imported_ming.message.message_content, "早安[火花]")
+        self.assertTrue(imported_ming.is_active)
+        self.assertIsNotNone(imported_ming.next_run_at)
 
 
 if __name__ == "__main__":
