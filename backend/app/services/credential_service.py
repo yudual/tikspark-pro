@@ -11,6 +11,9 @@ from playwright.sync_api import sync_playwright
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+import os
+import shutil
+
 from ..models import Account, AccountStatus, Friend, Message, MessageType
 from ..schemas import (
     AccountCheckResult,
@@ -25,6 +28,21 @@ from .schedule_service import compute_friend_next_run_at, get_local_now, validat
 from .secret_service import get_secret_service
 
 DEFAULT_MESSAGE = "[火花]"
+
+SYSTEM_BOT_KEYWORDS: set[str] = {
+    "抖音火山版", "头条", "今日头条", "西瓜视频", "懂车帝", "抖音小助手",
+    "系统通知", "服务通知", "创作者服务中心", "电商小助手", "随拍小助手",
+    "抖音安全中心", "消息助手", "活动通知", "群聊", "陌生人消息", "服务号",
+    "钱包小助手", "直播小助手", "抖音商城", "抖音小店", "抖音创作仔", "抖音搜索",
+    "dou+", "dou+小助手"
+}
+
+
+def get_browser_executable_path() -> str | None:
+    for path in ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]:
+        if os.path.exists(path):
+            return path
+    return shutil.which("google-chrome-stable") or shutil.which("google-chrome") or shutil.which("chromium")
 
 
 @dataclass
@@ -518,11 +536,12 @@ class CredentialService:
         cookies = self._to_playwright_cookies(cookie_text)
         candidates: dict[str, UserCandidate] = {}
         refreshed_cookies: str | None = None
+        exe_path = get_browser_executable_path()
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                args=[
+            launch_kwargs: dict[str, Any] = {
+                "headless": True,
+                "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--disable-dev-shm-usage",
                     "--no-sandbox",
@@ -540,7 +559,11 @@ class CredentialService:
                     "--disable-breakpad",
                     "--disable-renderer-backgrounding",
                 ],
-            )
+            }
+            if exe_path:
+                launch_kwargs["executable_path"] = exe_path
+
+            browser = playwright.chromium.launch(**launch_kwargs)
 
             context = browser.new_context(
                 viewport={"width": 1440, "height": 960},
@@ -556,396 +579,103 @@ class CredentialService:
             context.add_cookies(cookies)
             page = context.new_page()
 
-            def capture_candidate(obj: dict[str, Any], source: str) -> None:
-                uid = str(obj.get("uid") or obj.get("user_id") or obj.get("id") or "").strip()
-                nickname = str(obj.get("nickname") or obj.get("name") or "").strip()
-                if not uid and not nickname:
-                    return
-                if not uid:
-                    uid = nickname
-
-                unique_id = str(obj.get("unique_id") or "").strip()
-                short_id = str(obj.get("short_id") or "").strip()
-                sec_uid = str(obj.get("sec_uid") or "").strip()
-
-                def get_best_id(u_id: str, s_id: str, sec: str, fallback_uid: str) -> str:
-                    if u_id and not u_id.startswith("MS4w"):
-                        return u_id
-                    if s_id:
-                        return s_id
-                    if sec and not sec.startswith("MS4w"):
-                        return sec
-                    if fallback_uid and not fallback_uid.startswith("MS4w"):
-                        return fallback_uid
-                    return sec or fallback_uid or u_id
-
-                display_id = get_best_id(unique_id, short_id, sec_uid, uid)
-                avatar_url = self._extract_avatar_url(obj)
-                remark = str(obj.get("remark_name") or "").strip()
-
-                self_score = 0
-                for key in ("is_self", "self_user", "is_current_user", "mine", "is_owner"):
-                    if obj.get(key) is True:
-                        self_score += 10
-                if source == "storage":
-                    self_score += 2
-                if source == "dom_self":
-                    self_score += 50
-
-                # 互相关注/好友权重提升
-                if obj.get("follow_status") == 2 or obj.get("is_friend") is True:
-                    self_score += 1
-
-                candidate = UserCandidate(
-                    uid=uid,
-                    display_id=display_id,
-                    nickname=nickname,
-                    avatar_url=avatar_url,
-                    remark=remark,
-                    source=source,
-                    self_score=self_score,
-                )
-
-                existing = candidates.get(uid)
-                if existing is None:
-                    candidates[uid] = candidate
-                    return
-
-                if candidate.self_score > existing.self_score:
-                    existing.self_score = candidate.self_score
-                if existing.display_id.startswith("MS4w") and not candidate.display_id.startswith("MS4w"):
-                    existing.display_id = candidate.display_id
-                if not existing.avatar_url and candidate.avatar_url:
-                    existing.avatar_url = candidate.avatar_url
-                if not existing.nickname and candidate.nickname:
-                    existing.nickname = candidate.nickname
-                if not existing.remark and candidate.remark:
-                    existing.remark = candidate.remark
-
-            def extract_deep(payload: Any, source: str) -> None:
-                if isinstance(payload, dict):
-                    capture_candidate(payload, source)
-                    for value in payload.values():
-                        if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
-                            try:
-                                extract_deep(json.loads(value), source)
-                            except Exception:
-                                pass
-                        elif isinstance(value, (dict, list)):
-                            extract_deep(value, source)
-                elif isinstance(payload, list):
-                    for item in payload:
-                        extract_deep(item, source)
-
-            def on_response(response: Any) -> None:
-                try:
-                    if response.request.resource_type not in ["fetch", "xhr"]:
-                        return
-                    if not response.ok:
-                        return
-                    url = response.url.lower()
-                    if not any(
-                        k in url
-                        for k in (
-                            "following/list",
-                            "follower/list",
-                            "user/friend",
-                            "im/user",
-                            "im/spotlight",
-                            "im/chat",
-                            "relation/",
-                            "conversation/",
-                            "contact/",
-                            "aweme/v1/web/user",
-                            "session/",
-                            "chat/",
-                            "follow",
-                        )
-                    ):
-                        return
-                    data = response.json()
-                    extract_deep(data, "network")
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-
             try:
-                # -------------------------------------------------------------
-                # 引擎一：首先访问个人主页，获取自身资料并主动展开「关注列表」与「粉丝列表」
-                # -------------------------------------------------------------
+                # 访问个人主页建立上下文
                 page.goto("https://www.douyin.com/user/self", timeout=50000, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
 
-                # 提取自身主页资料
-                self_data = page.evaluate(
-                    """() => {
-                    return {
-                        nickname: document.querySelector('[data-e2e="user-info-nickname"]')?.innerText?.trim(),
-                        unique_id: document.querySelector('[data-e2e="user-info-id"]')?.innerText?.replace('抖音号：', '')?.trim(),
-                        avatar_url: document.querySelector('[data-e2e="user-avatar"] img')?.src || ''
-                    };
-                }"""
-                )
-                if self_data and (self_data.get("nickname") or self_data.get("unique_id")):
-                    uid = parsed.uid or "self"
-                    candidates[uid] = UserCandidate(
-                        uid=uid,
-                        display_id=self_data.get("unique_id") or "",
-                        nickname=self_data.get("nickname") or "抖音账号",
-                        avatar_url=self_data.get("avatar_url") or "",
-                        remark="",
-                        source="dom_self",
-                        self_score=100,
-                    )
-
-                # 主动点击并展开「关注」弹窗
-                following_selectors = [
-                    '[data-e2e="user-following"]',
-                    '[data-e2e="user-info-following"]',
-                    'a[href*="following"]',
-                    'div:has-text("关注")',
-                    'span:has-text("关注")',
-                ]
-                for sel in following_selectors:
-                    try:
-                        loc = page.locator(sel).first
-                        if loc.count() and loc.is_visible():
-                            loc.click(timeout=2500)
-                            page.wait_for_timeout(2000)
-                            break
-                    except Exception:
-                        continue
-
-                # 滚动弹窗或页面以加载更多关注/互关列表
-                for _ in range(12):
-                    page.mouse.wheel(0, 800)
-                    page.wait_for_timeout(350)
-
-                # 从关注列表中直接提取 DOM 卡片
-                dom_following = page.evaluate(
-                    """() => {
-                    const list = [];
-                    const items = document.querySelectorAll('[class*="user-card"], [class*="follow-item"], [class*="user-item"], [class*="focus-item"], [class*="contact-item"], .semi-table-row, li[role="listitem"]');
-                    items.forEach(el => {
-                        const nameEl = el.querySelector('[class*="name"], [class*="title"], strong, [data-e2e*="name"]') || el;
-                        const avatarImg = el.querySelector('img');
-                        const rawText = nameEl?.innerText?.trim()?.split('\\n')[0] || '';
-                        const avatar = avatarImg?.src || '';
-                        const link = el.getAttribute('href') || el.querySelector('a')?.getAttribute('href') || '';
-                        let uid = '';
-                        if (link && link.includes('/user/')) {
-                            uid = link.split('/user/')[1]?.split('?')[0] || '';
-                        }
-                        if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('抖音') && !rawText.includes('关注')) {
-                            list.push({
-                                nickname: rawText,
-                                avatar_url: avatar,
-                                uid: uid || rawText,
-                                display_id: uid || rawText,
-                                source: 'dom_following'
-                            });
-                        }
-                    });
-                    return list;
-                }"""
-                )
-                for item in dom_following:
-                    capture_candidate(item, "dom_following")
-
-                # -------------------------------------------------------------
-                # 引擎二：访问抖音创作者中心「朋友私信」全量好友面板 (creator.douyin.com)
-                # -------------------------------------------------------------
-                try:
-                    page.goto("https://creator.douyin.com/creator-micro/data/following/chat", timeout=35000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2500)
-                    self._dismiss_non_login_dialogs(page)
-
-                    # 点击「朋友私信」标签
-                    friends_tab_selectors = [
-                        'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]',
-                        'div:has-text("朋友私信")',
-                        'span:has-text("朋友私信")',
-                        'button:has-text("朋友私信")',
-                    ]
-                    for tab_sel in friends_tab_selectors:
-                        try:
-                            tab_loc = page.locator(tab_sel).first
-                            if tab_loc.count() and tab_loc.is_visible():
-                                tab_loc.click(timeout=2000)
-                                page.wait_for_timeout(1500)
-                                break
-                        except Exception:
-                            continue
-
-                    # 滚动朋友私信列表
-                    for _ in range(12):
-                        page.mouse.wheel(0, 600)
-                        page.wait_for_timeout(300)
-
-                    dom_creator_friends = page.evaluate(
-                        """() => {
-                        const list = [];
-                        const items = document.querySelectorAll('.semi-list-item, [class*="semi-list-item"], [class*="chat-item"], [class*="user-item"], [class*="contact"]');
-                        items.forEach(el => {
-                            const nameEl = el.querySelector('[class*="item-header-name"], [class*="name"], strong, [data-e2e*="name"]') || el;
-                            const avatarImg = el.querySelector('img');
-                            const rawText = nameEl?.innerText?.trim()?.split('\\n')[0] || '';
-                            const avatar = avatarImg?.src || '';
-                            if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('私信') && !rawText.includes('系统通知')) {
-                                list.push({
-                                    nickname: rawText,
-                                    avatar_url: avatar,
-                                    uid: rawText,
-                                    display_id: rawText,
-                                    source: 'creator_friends'
-                                });
-                            }
-                        });
-                        return list;
-                    }"""
-                    )
-                    for item in dom_creator_friends:
-                        capture_candidate(item, "creator_friends")
-                except Exception:
-                    pass
-
-                # -------------------------------------------------------------
-                # 引擎三：在浏览器内直接通过 fetch 发起关系链全量翻页拉取
-                # -------------------------------------------------------------
-                api_in_page_data = page.evaluate(
+                extracted_data = page.evaluate(
                     """async () => {
-                    const payloads = [];
-                    // 1. 翻页拉取所有关注好友 (互关好友都在关注列表中)
+                    // 1. 获取专属 IM 互关关系链 (仅互关好友与火花好友)
+                    let spotData = {};
                     try {
-                        let max_time = 0;
-                        for (let i = 0; i < 10; i++) {
-                            const resp = await fetch(`/aweme/v1/web/user/following/list/?count=50&max_time=${max_time}`, {
-                                headers: { 'Accept': 'application/json' }
-                            });
-                            if (!resp.ok) break;
-                            const json = await resp.json();
-                            payloads.push(json);
-                            if (!json.has_more || !json.followings || json.followings.length === 0) break;
-                            max_time = json.max_time || json.cursor || 0;
-                        }
+                        const resp = await fetch('/aweme/v1/web/im/spotlight/relation/', {
+                            headers: { 'Accept': 'application/json' }
+                        });
+                        if (resp.ok) spotData = await resp.json();
                     } catch (e) {}
 
-                    // 2. 翻页拉取粉丝列表中的互关好友
-                    try {
-                        let max_time = 0;
-                        for (let i = 0; i < 6; i++) {
-                            const resp = await fetch(`/aweme/v1/web/user/follower/list/?count=50&max_time=${max_time}`, {
-                                headers: { 'Accept': 'application/json' }
-                            });
-                            if (!resp.ok) break;
-                            const json = await resp.json();
-                            payloads.push(json);
-                            if (!json.has_more || !json.followers || json.followers.length === 0) break;
-                            max_time = json.max_time || json.cursor || 0;
-                        }
-                    } catch (e) {}
+                    const ownerSecUid = spotData.owner_sec_uid || '';
 
-                    // 3. 通讯录、星标关系与聊天会话
-                    const endpoints = [
-                        '/aweme/v1/web/im/spotlight/relation/',
-                        '/aweme/v1/web/im/user/friends/',
-                        '/aweme/v1/web/im/chat/conversations/',
-                        '/aweme/v1/web/im/contacts/'
-                    ];
-                    for (const ep of endpoints) {
+                    // 2. 获取本人资料
+                    let selfUser = {};
+                    if (ownerSecUid) {
                         try {
-                            const resp = await fetch(ep, { headers: { 'Accept': 'application/json' } });
-                            if (resp.ok) {
-                                payloads.push(await resp.json());
+                            const profileResp = await fetch(`/aweme/v1/web/user/profile/other/?sec_user_id=${ownerSecUid}`);
+                            if (profileResp.ok) {
+                                const pData = await profileResp.json();
+                                selfUser = pData.user || {};
                             }
                         } catch (e) {}
                     }
-                    return payloads;
-                }"""
-                )
-                if api_in_page_data:
-                    for payload in api_in_page_data:
-                        extract_deep(payload, "in_page_api")
 
-                # -------------------------------------------------------------
-                # 引擎四：访问私信页面 /chat 作为补充
-                # -------------------------------------------------------------
-                try:
-                    page.goto("https://www.douyin.com/chat", timeout=35000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2500)
-                    for _ in range(6):
-                        page.mouse.wheel(0, 500)
-                        page.wait_for_timeout(300)
+                    // Fallback DOM 本人资料
+                    const domNickname = document.querySelector('[data-e2e="user-info-nickname"]')?.innerText?.trim();
+                    const domDyId = document.querySelector('[data-e2e="user-info-id"]')?.innerText?.replace('抖音号：', '')?.trim();
+                    const domAvatar = document.querySelector('[data-e2e="user-avatar"] img')?.src || '';
 
-                    dom_contacts = page.evaluate(
-                        """() => {
-                        const list = [];
-                        const items = document.querySelectorAll('[data-e2e*="im"], [class*="conversation"], [class*="user-item"], [class*="chat-item"], [class*="session"], .semi-table-row, [class*="contact"]');
-                        items.forEach(el => {
-                            const nameEl = el.querySelector('[class*="name"], [class*="title"], strong, [data-e2e*="name"]') || el;
-                            const avatarImg = el.querySelector('img');
-                            const rawText = nameEl?.innerText?.trim()?.split('\\n')[0] || '';
-                            const avatar = avatarImg?.src || '';
-                            const link = el.getAttribute('href') || el.querySelector('a')?.getAttribute('href') || '';
-                            let uid = '';
-                            if (link && link.includes('/user/')) {
-                                uid = link.split('/user/')[1]?.split('?')[0] || '';
-                            }
-                            if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('抖音消息') && !rawText.includes('系统通知')) {
-                                list.push({
-                                    nickname: rawText,
-                                    avatar_url: avatar,
-                                    uid: uid || rawText,
-                                    display_id: uid || rawText,
-                                    source: 'dom_chat'
-                                });
-                            }
-                        });
-                        return list;
-                    }"""
-                    )
-                    for item in dom_contacts:
-                        capture_candidate(item, "dom_chat")
-                except Exception:
-                    pass
-
-                # 提取 SSR 与 Storage 数据
-                ssr_data = page.evaluate(
-                    """() => {
-                    const data = [];
-                    if (window.__INITIAL_STATE__) data.push(window.__INITIAL_STATE__);
-                    if (window._SSR_DATA) data.push(window._SSR_DATA);
-                    if (window._INIT_DATA) data.push(window._INIT_DATA);
-                    return data;
-                }"""
-                )
-                for item in ssr_data:
-                    extract_deep(item, "ssr")
-
-                storage_candidates = page.evaluate(
-                    """() => {
-                    const snapshots = [];
-                    const collect = (source, storage) => {
-                      for (let i = 0; i < storage.length; i += 1) {
-                        const key = storage.key(i);
-                        const value = storage.getItem(key);
-                        if (!value || typeof value !== 'string') continue;
-                        if (value.includes('nickname') && (value.includes('uid') || value.includes('user_id'))) {
-                          snapshots.push({ source, key, value });
-                        }
-                      }
+                    return {
+                        selfAccount: {
+                            nickname: selfUser.nickname || domNickname || '抖音账号',
+                            display_id: selfUser.unique_id || selfUser.short_id || domDyId || '',
+                            uid: selfUser.uid || '',
+                            sec_uid: ownerSecUid,
+                            avatar_url: selfUser.avatar_thumb?.url_list?.[0] || domAvatar || ''
+                        },
+                        spotlightFollowings: spotData.followings || []
                     };
-                    collect('localStorage', window.localStorage);
-                    collect('sessionStorage', window.sessionStorage);
-                    return snapshots;
                 }"""
                 )
-                for item in storage_candidates:
-                    try:
-                        extract_deep(json.loads(item["value"]), "storage")
-                    except Exception:
-                        pass
+
+                self_acc = extracted_data.get("selfAccount", {})
+                self_uid = str(self_acc.get("uid") or parsed.uid or "self").strip()
+                self_dy_id = str(self_acc.get("display_id") or parsed.dy_id or "").strip()
+                self_sec_uid = str(self_acc.get("sec_uid") or "").strip()
+
+                # 记录本人候选
+                candidates[self_uid] = UserCandidate(
+                    uid=self_uid,
+                    display_id=self_dy_id,
+                    nickname=self_acc.get("nickname") or "抖音账号",
+                    avatar_url=self_acc.get("avatar_url") or "",
+                    remark="",
+                    source="self_profile",
+                    self_score=100,
+                )
+
+                # 提取纯互关好友
+                followings = extracted_data.get("spotlightFollowings", [])
+                for u in followings:
+                    nick = str(u.get("nickname") or "").strip()
+                    if not nick:
+                        continue
+                    # 过滤系统服务号与官方推送号
+                    if any(k in nick for k in SYSTEM_BOT_KEYWORDS):
+                        continue
+
+                    uid = str(u.get("uid") or "").strip()
+                    sec_uid = str(u.get("sec_uid") or "").strip()
+                    disp_id = str(u.get("unique_id") or u.get("short_id") or uid).strip()
+
+                    # 排除本人
+                    if uid == self_uid or sec_uid == self_sec_uid or (disp_id and disp_id == self_dy_id):
+                        continue
+
+                    avatar = ""
+                    if isinstance(u.get("avatar_thumb"), dict):
+                        url_list = u["avatar_thumb"].get("url_list", [])
+                        if url_list:
+                            avatar = url_list[0]
+
+                    candidates[uid or disp_id] = UserCandidate(
+                        uid=uid or disp_id,
+                        display_id=disp_id,
+                        nickname=nick,
+                        avatar_url=avatar,
+                        remark=str(u.get("remark_name") or "").strip(),
+                        source="spotlight_relation",
+                        self_score=0,
+                    )
 
                 try:
                     ctx_cookies = context.cookies()
@@ -977,7 +707,7 @@ class CredentialService:
                 account_candidate=account_candidate,
                 friends=friends,
                 status=AccountStatus.healthy,
-                status_reason=f"已成功同步 {len(friends)} 位关注与互关好友。",
+                status_reason=f"已成功同步 {len(friends)} 位互关好友。",
                 refreshed_cookies=refreshed_cookies,
             )
 
@@ -985,7 +715,7 @@ class CredentialService:
             account_candidate=account_candidate,
             friends=[],
             status=AccountStatus.unknown,
-            status_reason="账号资料已加载，但未检测到关注列表（可使用手动添加或批量导入好友）。",
+            status_reason="账号资料已加载，但未检测到互关好友（可使用手动添加或批量导入好友）。",
             refreshed_cookies=refreshed_cookies,
         )
 
@@ -1000,9 +730,18 @@ class CredentialService:
             .all()
         )
         existing_by_dy_id = {friend.friend_dy_id: friend for friend in current_friends}
-        default_window = get_default_schedule_window(db)
+        incoming_display_ids = {item.display_id for item in incoming_friends if item.display_id}
 
+        # 1. 自动清除数据库中历史残留的系统服务号/官方推送垃圾好友 (如 抖音火山版、头条 等)
+        for dy_id, friend in list(existing_by_dy_id.items()):
+            if any(k in (friend.friend_nickname or "") for k in SYSTEM_BOT_KEYWORDS):
+                db.delete(friend)
+                existing_by_dy_id.pop(dy_id, None)
+
+        default_window = get_default_schedule_window(db)
         now = beijing_now()
+
+        # 2. 插入或更新最新纯互关好友
         for item in incoming_friends:
             if not item.display_id:
                 continue
@@ -1091,19 +830,6 @@ class CredentialService:
         if high_score and high_score[0].self_score > 0:
             return high_score[0]
 
-        storage_candidates = [item for item in candidates.values() if item.source == "storage"]
-        if storage_candidates:
-            return sorted(
-                storage_candidates,
-                key=lambda item: (
-                    item.self_score,
-                    bool(item.avatar_url),
-                    bool(item.display_id),
-                    item.nickname,
-                ),
-                reverse=True,
-            )[0]
-
         return None
 
     def _pick_friend_candidates(
@@ -1126,6 +852,9 @@ class CredentialService:
             if candidate.display_id in excluded_display_ids:
                 continue
             if not candidate.display_id or not candidate.nickname:
+                continue
+            # 严格过滤系统号与官方号
+            if any(k in candidate.nickname for k in SYSTEM_BOT_KEYWORDS):
                 continue
             friends.append(candidate)
 

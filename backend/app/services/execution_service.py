@@ -8,8 +8,18 @@ from typing import NamedTuple
 
 from playwright.sync_api import Locator, Page, sync_playwright
 
+import os
+import shutil
+
 from ..models import Account, Friend
 from .secret_service import get_secret_service
+
+
+def get_browser_executable_path() -> str | None:
+    for path in ["/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]:
+        if os.path.exists(path):
+            return path
+    return shutil.which("google-chrome-stable") or shutil.which("google-chrome") or shutil.which("chromium")
 
 LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密码登录")
 DISMISS_BUTTON_TEXTS = ("取消", "暂不", "知道了", "关闭", "稍后再说", "继续逛逛", "暂不开启")
@@ -201,11 +211,16 @@ class ExecutionService:
             if account.proxy_url:
                 proxy_settings = {"server": account.proxy_url}
 
-            browser = playwright.chromium.launch(
-                headless=True,
-                args=browser_args,
-                proxy=proxy_settings,
-            )
+            exe_path = get_browser_executable_path()
+            launch_kwargs: dict[str, Any] = {
+                "headless": True,
+                "args": browser_args,
+                "proxy": proxy_settings,
+            }
+            if exe_path:
+                launch_kwargs["executable_path"] = exe_path
+
+            browser = playwright.chromium.launch(**launch_kwargs)
 
             context = browser.new_context(
                 viewport={"width": 1440, "height": 960},
