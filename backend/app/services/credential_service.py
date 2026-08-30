@@ -726,7 +726,7 @@ class CredentialService:
         )
 
     def _sync_friends_to_db(
-        self, db: Session, account: Account, incoming_friends: list[UserCandidate]
+        self, db: Session, account: Account, incoming_friends: list[UserCandidate], purge_missing: bool = True
     ) -> list[Friend]:
         db.refresh(account, attribute_names=["friends"])
         current_friends = (
@@ -738,9 +738,11 @@ class CredentialService:
         existing_by_dy_id = {friend.friend_dy_id: friend for friend in current_friends}
         incoming_display_ids = {item.display_id for item in incoming_friends if item.display_id}
 
-        # 1. 自动清除数据库中历史残留的系统服务号/官方推送垃圾好友 (如 抖音火山版、头条 等)
+        # 1. 自动清除数据库中历史残留的单向关注、已取关及系统垃圾好友
         for dy_id, friend in list(existing_by_dy_id.items()):
-            if any(k in (friend.friend_nickname or "") for k in SYSTEM_BOT_KEYWORDS):
+            if (purge_missing and dy_id not in incoming_display_ids) or any(k in (friend.friend_nickname or "") for k in SYSTEM_BOT_KEYWORDS):
+                if friend.message:
+                    db.delete(friend.message)
                 db.delete(friend)
                 existing_by_dy_id.pop(dy_id, None)
 

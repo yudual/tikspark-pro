@@ -49,7 +49,7 @@ class CredentialServiceTests(unittest.TestCase):
         self.engine.dispose()
 
     def test_sync_does_not_delete_missing_friends(self):
-        # 模拟本次网络嗅探只抓到了好友 A 和 新好友 C，没有抓到 好友 B
+        # 模拟本次网络嗅探只抓到了好友 A 和 新好友 C，没有抓到 好友 B (非全量同步模式 purge_missing=False)
         incoming = [
             UserCandidate(
                 uid="uid_a",
@@ -69,7 +69,7 @@ class CredentialServiceTests(unittest.TestCase):
             ),
         ]
 
-        synced = self.service._sync_friends_to_db(self.db, self.account, incoming)
+        synced = self.service._sync_friends_to_db(self.db, self.account, incoming, purge_missing=False)
         self.db.commit()
 
         # 验证好友 B 仍然安然无恙，没有被物理误删
@@ -81,6 +81,26 @@ class CredentialServiceTests(unittest.TestCase):
 
         friend_a = self.db.query(Friend).filter(Friend.friend_dy_id == "friend_a_id").one()
         self.assertEqual(friend_a.friend_nickname, "好友A(改名)")
+
+    def test_sync_purges_non_mutual_friends(self):
+        # 全量同步模式 (purge_missing=True)，不在列表里的好友会被物理清理
+        incoming = [
+            UserCandidate(
+                uid="uid_a",
+                display_id="friend_a_id",
+                nickname="好友A",
+                avatar_url="http://avatar.a",
+                remark="",
+                source="spotlight_relation",
+            ),
+        ]
+
+        synced = self.service._sync_friends_to_db(self.db, self.account, incoming, purge_missing=True)
+        self.db.commit()
+
+        all_friends = self.db.query(Friend).filter(Friend.account_id == self.account.id).all()
+        self.assertEqual(len(all_friends), 1)
+        self.assertEqual(all_friends[0].friend_dy_id, "friend_a_id")
 
     def test_manual_add_and_update_and_delete_friend(self):
         from backend.app.schemas import FriendCreateRequest, FriendUpdateRequest
