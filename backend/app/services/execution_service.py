@@ -490,9 +490,17 @@ class ExecutionService:
                     pass
 
             # 策略 B: 尝试通过抖音全站用户搜索定位好友
-            search_query = dy_id if (dy_id and not dy_id.startswith("MS4w") and dy_id != target_name) else target_name
-            if search_query:
+            # 优先使用真实昵称搜索；若有自定义抖音号(非内部纯数字UID)也可作为备选
+            search_candidates: list[str] = []
+            if target_name:
+                search_candidates.append(target_name)
+            if dy_id and not dy_id.startswith("MS4w") and not (dy_id.isdigit() and len(dy_id) >= 10) and dy_id != target_name:
+                search_candidates.append(dy_id)
+
+            for search_query in search_candidates:
                 clean_query = normalize_friend_name(search_query) or search_query.strip()
+                if not clean_query:
+                    continue
                 search_url = f"https://www.douyin.com/search/{clean_query}?type=user"
                 page.goto(search_url, timeout=35000, wait_until="domcontentloaded")
                 time.sleep(random.uniform(2.5, 4.0))

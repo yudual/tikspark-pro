@@ -661,10 +661,11 @@ class CredentialService:
 
                     uid = str(u.get("uid") or "").strip()
                     sec_uid = str(u.get("sec_uid") or "").strip()
-                    disp_id = str(u.get("unique_id") or u.get("short_id") or uid).strip()
+                    # 优先使用真实自定义抖音号/短ID；若无，优先保留 sec_uid（可100%直达主页与私信），最后回退 uid
+                    disp_id = str(u.get("unique_id") or u.get("short_id") or sec_uid or uid).strip()
 
                     # 排除本人
-                    if uid == self_uid or sec_uid == self_sec_uid or (disp_id and disp_id == self_dy_id):
+                    if (uid and uid == self_uid) or (sec_uid and sec_uid == self_sec_uid) or (disp_id and disp_id in (self_dy_id, self_sec_uid)):
                         continue
 
                     avatar = ""
@@ -673,8 +674,8 @@ class CredentialService:
                         if url_list:
                             avatar = url_list[0]
 
-                    candidates[uid or disp_id] = UserCandidate(
-                        uid=uid or disp_id,
+                    candidates[uid or sec_uid or disp_id] = UserCandidate(
+                        uid=uid or sec_uid or disp_id,
                         display_id=disp_id,
                         nickname=nick,
                         avatar_url=avatar,
@@ -735,25 +736,42 @@ class CredentialService:
             .filter(Friend.account_id == account.id)
             .all()
         )
-        existing_by_dy_id = {friend.friend_dy_id: friend for friend in current_friends}
+        existing_by_dy_id = {friend.friend_dy_id: friend for friend in current_friends if friend.friend_dy_id}
         incoming_display_ids = {item.display_id for item in incoming_friends if item.display_id}
 
-        # 1. 自动清除数据库中历史残留的单向关注、已取关及系统垃圾好友
+        # 1. 自动清除数据库中历史残留的系统垃圾好友
         for dy_id, friend in list(existing_by_dy_id.items()):
-            if (purge_missing and dy_id not in incoming_display_ids) or any(k in (friend.friend_nickname or "") for k in SYSTEM_BOT_KEYWORDS):
+            if any(k in (friend.friend_nickname or "") for k in SYSTEM_BOT_KEYWORDS):
                 if friend.message:
                     db.delete(friend.message)
                 db.delete(friend)
                 existing_by_dy_id.pop(dy_id, None)
 
+        # 建立昵称到已存好友的映射（用于合并重复数据）
+        existing_by_nickname: dict[str, Friend] = {}
+        for friend in list(existing_by_dy_id.values()):
+            norm_name = re.sub(r"\s+", "", friend.friend_nickname or "").casefold()
+            if norm_name:
+                if norm_name in existing_by_nickname:
+                    # 发现重复昵称的脏数据，保留一条，删除多余的
+                    extra = friend
+                    if extra.message:
+                        db.delete(extra.message)
+                    db.delete(extra)
+                    existing_by_dy_id.pop(extra.friend_dy_id, None)
+                else:
+                    existing_by_nickname[norm_name] = friend
+
         default_window = get_default_schedule_window(db)
         now = beijing_now()
 
         # 2. 插入或更新最新纯互关好友
+        synced_friends: list[Friend] = []
         for item in incoming_friends:
-            if not item.display_id:
+            if not item.display_id and not item.nickname:
                 continue
-            existing = existing_by_dy_id.get(item.display_id)
+            norm_name = re.sub(r"\s+", "", item.nickname or "").casefold()
+            existing = existing_by_dy_id.get(item.display_id) or (existing_by_nickname.get(norm_name) if norm_name else None)
             if existing is None:
                 existing = Friend(
                     account_id=account.id,
@@ -774,12 +792,28 @@ class CredentialService:
                     )
                 )
                 existing_by_dy_id[item.display_id] = existing
+                if norm_name:
+                    existing_by_nickname[norm_name] = existing
             else:
+                existing.friend_dy_id = item.display_id
                 if item.nickname:
                     existing.friend_nickname = item.nickname
                 if item.avatar_url:
                     existing.friend_avatar = item.avatar_url
                 existing.last_synced_at = now
+                existing_by_dy_id[item.display_id] = existing
+            synced_friends.append(existing)
+
+        # 3. 如果开启了 purge_missing，清理本次同步列表中不存在的好友
+        if purge_missing and incoming_display_ids:
+            synced_ids = {f.id for f in synced_friends}
+            for friend in list(existing_by_dy_id.values()):
+                if friend.id not in synced_ids:
+                    if friend.message:
+                        db.delete(friend.message)
+                    db.delete(friend)
+
+        db.flush()
 
         db.flush()
         return (
