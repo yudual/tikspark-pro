@@ -643,7 +643,7 @@ class CredentialService:
                     self_score=100,
                 )
 
-                # 提取纯互关好友
+                # 提取严格互相关注好友
                 followings = extracted_data.get("spotlightFollowings", [])
                 for u in followings:
                     nick = str(u.get("nickname") or "").strip()
@@ -651,6 +651,12 @@ class CredentialService:
                         continue
                     # 过滤系统服务号与官方推送号
                     if any(k in nick for k in SYSTEM_BOT_KEYWORDS):
+                        continue
+
+                    # 严格校验是否为互相关注 (social_relation_type == 1 表示双方互相关注好友)
+                    # 彻底剔除单向关注 (type 5)、推荐 (type 4)、陌生人 (type 0)
+                    rel_type = u.get("social_relation_type")
+                    if rel_type is not None and rel_type != 1:
                         continue
 
                     uid = str(u.get("uid") or "").strip()
