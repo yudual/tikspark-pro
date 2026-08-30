@@ -754,7 +754,64 @@ class CredentialService:
                     capture_candidate(item, "dom_following")
 
                 # -------------------------------------------------------------
-                # 引擎二：在浏览器内直接通过 fetch 发起关系链全量翻页拉取
+                # 引擎二：访问抖音创作者中心「朋友私信」全量好友面板 (creator.douyin.com)
+                # -------------------------------------------------------------
+                try:
+                    page.goto("https://creator.douyin.com/creator-micro/data/following/chat", timeout=35000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2500)
+                    self._dismiss_non_login_dialogs(page)
+
+                    # 点击「朋友私信」标签
+                    friends_tab_selectors = [
+                        'xpath=//*[@id="sub-app"]/div/div/div[1]/div[2]',
+                        'div:has-text("朋友私信")',
+                        'span:has-text("朋友私信")',
+                        'button:has-text("朋友私信")',
+                    ]
+                    for tab_sel in friends_tab_selectors:
+                        try:
+                            tab_loc = page.locator(tab_sel).first
+                            if tab_loc.count() and tab_loc.is_visible():
+                                tab_loc.click(timeout=2000)
+                                page.wait_for_timeout(1500)
+                                break
+                        except Exception:
+                            continue
+
+                    # 滚动朋友私信列表
+                    for _ in range(12):
+                        page.mouse.wheel(0, 600)
+                        page.wait_for_timeout(300)
+
+                    dom_creator_friends = page.evaluate(
+                        """() => {
+                        const list = [];
+                        const items = document.querySelectorAll('.semi-list-item, [class*="semi-list-item"], [class*="chat-item"], [class*="user-item"], [class*="contact"]');
+                        items.forEach(el => {
+                            const nameEl = el.querySelector('[class*="item-header-name"], [class*="name"], strong, [data-e2e*="name"]') || el;
+                            const avatarImg = el.querySelector('img');
+                            const rawText = nameEl?.innerText?.trim()?.split('\\n')[0] || '';
+                            const avatar = avatarImg?.src || '';
+                            if (rawText && rawText.length > 0 && rawText.length < 50 && !rawText.includes('私信') && !rawText.includes('系统通知')) {
+                                list.push({
+                                    nickname: rawText,
+                                    avatar_url: avatar,
+                                    uid: rawText,
+                                    display_id: rawText,
+                                    source: 'creator_friends'
+                                });
+                            }
+                        });
+                        return list;
+                    }"""
+                    )
+                    for item in dom_creator_friends:
+                        capture_candidate(item, "creator_friends")
+                except Exception:
+                    pass
+
+                # -------------------------------------------------------------
+                # 引擎三：在浏览器内直接通过 fetch 发起关系链全量翻页拉取
                 # -------------------------------------------------------------
                 api_in_page_data = page.evaluate(
                     """async () => {
@@ -812,7 +869,7 @@ class CredentialService:
                         extract_deep(payload, "in_page_api")
 
                 # -------------------------------------------------------------
-                # 引擎三：访问私信页面 /chat 作为补充
+                # 引擎四：访问私信页面 /chat 作为补充
                 # -------------------------------------------------------------
                 try:
                     page.goto("https://www.douyin.com/chat", timeout=35000, wait_until="domcontentloaded")
@@ -1189,6 +1246,32 @@ class CredentialService:
         except json.JSONDecodeError:
             pass
         return None
+
+    def _dismiss_non_login_dialogs(self, page: Any) -> None:
+        """自动关闭网页中的通知、引导及非登录遮罩弹窗。"""
+        non_login_texts = ["我知道了", "知道了", "好的", "确定", "确认", "稍后再说", "关闭", "取消"]
+        for text in non_login_texts:
+            try:
+                loc = page.get_by_text(text, exact=True).first
+                if loc.count() and loc.is_visible():
+                    loc.click(timeout=1000)
+            except Exception:
+                continue
+        close_selectors = [
+            ".semi-modal-close",
+            "button[aria-label='Close']",
+            "button[aria-label='关闭']",
+            "[aria-label='Close']",
+            "[aria-label='关闭']",
+            ".modal-close-icon",
+        ]
+        for sel in close_selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() and loc.is_visible():
+                    loc.click(timeout=1000)
+            except Exception:
+                continue
 
 
 credential_service = CredentialService()
