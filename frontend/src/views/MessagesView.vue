@@ -123,6 +123,45 @@ function insertSparkToBatch() {
   batchForm.messageContent = appendSparkToken(batchForm.messageContent);
 }
 
+const PRESET_LIBRARIES = [
+  {
+    name: "🌅 早安精选",
+    content: "早安呀[火花]\n早上好，新的一天加油[火花]\n早安打卡，火花不能断[火花]\n今日火花已送达☀️[火花]",
+  },
+  {
+    name: "🌙 晚安精选",
+    content: "晚安好梦[火花]\n今天辛苦啦，晚安[火花]\n睡前续个火花🌙[火花]\n今日火花打卡，做个好梦[火花]",
+  },
+  {
+    name: "🔥 极简续火",
+    content: "[火花]\n今日火花+1[火花]\n滴！火花打卡[火花]\n火花不能灭[火花]",
+  },
+  {
+    name: "🎉 趣味打卡",
+    content: "滴！今日好友火花卡已打[火花]\n又是友谊长存的一天[火花]\n火花不能断，冲冲冲[火花]\n互发火花，友谊万岁[火花]",
+  },
+];
+
+const EMOJI_TOKENS = ["[火花]", "🔥", "✨", "☀️", "🌙", "💪", "🎉", "❤️"];
+
+function applyPresetToLibrary(presetContent: string) {
+  libraryDraft.value = presetContent;
+  ElMessage.success("已载入精选话术模板！");
+}
+
+function applyPresetToBatch(presetContent: string) {
+  batchForm.messageContent = presetContent;
+  ElMessage.success("已载入精选话术模板！");
+}
+
+function insertTokenToLibrary(token: string) {
+  libraryDraft.value = libraryDraft.value ? `${libraryDraft.value} ${token}` : token;
+}
+
+function insertTokenToBatch(token: string) {
+  batchForm.messageContent = batchForm.messageContent ? `${batchForm.messageContent} ${token}` : token;
+}
+
 function randomPreview(content: string) {
   const entries = content
     .split(/\r?\n/)
@@ -451,8 +490,21 @@ onMounted(loadRows);
       </div>
     </section>
 
-    <el-dialog v-model="libraryDialogVisible" title="编辑随机话术库" width="620px">
+    <el-dialog v-model="libraryDialogVisible" title="编辑随机话术库" width="680px">
       <div class="library-editor">
+        <div class="preset-box">
+          <span class="meta">📚 精选模板库：</span>
+          <el-button
+            v-for="p in PRESET_LIBRARIES"
+            :key="p.name"
+            size="small"
+            plain
+            @click="applyPresetToLibrary(p.content)"
+          >
+            {{ p.name }}
+          </el-button>
+        </div>
+
         <el-input
           v-model="libraryDraft"
           type="textarea"
@@ -460,12 +512,23 @@ onMounted(loadRows);
           placeholder="每行一条话术，至少填写 2 条。执行时会随机选择其中一条。话术中可用 [火花] 追加一条续火花表情。"
         />
         <div class="library-toolbar">
-          <el-button size="small" plain @click="insertSparkToLibrary">
-            插入火花表情
+          <el-button size="small" type="primary" plain @click="insertSparkToLibrary">
+            🔥 插入 [火花] 表情
           </el-button>
-          <span class="meta">[火花] 发送时会自动点击抖音表情面板里的续火花表情。</span>
+          <div class="emoji-bar">
+            <span class="meta">快捷表情：</span>
+            <el-button
+              v-for="token in EMOJI_TOKENS"
+              :key="token"
+              size="small"
+              plain
+              @click="insertTokenToLibrary(token)"
+            >
+              {{ token }}
+            </el-button>
+          </div>
         </div>
-        <p class="meta">当前已收录 {{ countRandomEntries(libraryDraft) }} 条话术。</p>
+        <p class="meta">当前已收录 {{ countRandomEntries(libraryDraft) }} 条话术。[火花] 占位符在发送时会自动唤起抖音表情面板发送续火花表情。</p>
       </div>
       <template #footer>
         <el-button @click="libraryDialogVisible = false" :disabled="librarySubmitting">取消</el-button>
@@ -475,7 +538,7 @@ onMounted(loadRows);
       </template>
     </el-dialog>
 
-    <el-dialog v-model="batchDialogVisible" title="批量应用消息配置" width="620px">
+    <el-dialog v-model="batchDialogVisible" title="批量应用消息配置" width="680px">
       <el-form label-position="top">
         <el-form-item label="目标账号">
           <el-select v-model="batchForm.accountId" placeholder="默认应用于所有账号" clearable style="width: 100%">
@@ -502,6 +565,19 @@ onMounted(loadRows);
             <div class="sticker-hint">🔥 执行时自动打开抖音表情面板，发送续火花表情包</div>
           </div>
           <div v-else class="library-editor">
+            <div v-if="batchForm.messageType === 'random'" class="preset-box">
+              <span class="meta">📚 精选模板库：</span>
+              <el-button
+                v-for="p in PRESET_LIBRARIES"
+                :key="p.name"
+                size="small"
+                plain
+                @click="applyPresetToBatch(p.content)"
+              >
+                {{ p.name }}
+              </el-button>
+            </div>
+
             <el-input
               v-model="batchForm.messageContent"
               type="textarea"
@@ -511,8 +587,19 @@ onMounted(loadRows);
                 : '请输入要统一应用的固定消息内容，可用 [火花] 追加一条续火花表情。'"
             />
             <div class="library-toolbar">
-              <el-button size="small" plain @click="insertSparkToBatch">插入火花表情</el-button>
-              <span class="meta">[火花] 会先发送前面的文字，再单独发一条续火花表情。</span>
+              <el-button size="small" type="primary" plain @click="insertSparkToBatch">🔥 插入 [火花] 表情</el-button>
+              <div class="emoji-bar">
+                <span class="meta">快捷符号：</span>
+                <el-button
+                  v-for="token in EMOJI_TOKENS"
+                  :key="token"
+                  size="small"
+                  plain
+                  @click="insertTokenToBatch(token)"
+                >
+                  {{ token }}
+                </el-button>
+              </div>
             </div>
             <p v-if="batchForm.messageType === 'random'" class="meta">
               当前已收录 {{ countRandomEntries(batchForm.messageContent) }} 条话术。
@@ -590,6 +677,25 @@ onMounted(loadRows);
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.preset-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--surface-strong, #f8fafc);
+  border: 1px dashed var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+
+.emoji-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .sticker-hint {

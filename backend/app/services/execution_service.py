@@ -261,6 +261,7 @@ class ExecutionService:
                 # 2. 寻找好友（左侧列表匹配 -> 滚动加载 -> 搜索框检索 -> 主页发私信直连兜底）
                 target_name = friend.friend_nickname
                 target_dy_id = friend.friend_dy_id
+                active_page = page
 
                 friend_item = self._find_friend(page, target_name, target_dy_id)
                 if friend_item is not None:
@@ -270,10 +271,13 @@ class ExecutionService:
                         page.evaluate("(el) => el.click()", friend_item.element_handle())
                     time.sleep(random.uniform(1.5, 2.5))
                 else:
-                    # 左侧列表中未定位到（常见于几天未聊天的 App 好友），尝试通过用户个人主页直接唤起私信会话
-                    opened_dm = self._open_user_profile_and_chat(page, target_name, target_dy_id)
-                    if not opened_dm:
+                    # 左侧列表中未定位到（常见于几天未聊天的 App 好友），尝试通过用户个人主页或搜索直连唤起私信会话
+                    opened_page = self._open_user_profile_and_chat(page, context, target_name, target_dy_id)
+                    if not opened_page:
                         waf_issue = self._check_waf_or_captcha(page)
+                        for p in context.pages:
+                            if not waf_issue:
+                                waf_issue = self._check_waf_or_captcha(p)
                         if waf_issue:
                             return ExecutionResult(
                                 False,
@@ -287,9 +291,10 @@ class ExecutionService:
                             f"在消息列表与用户主页均未定位到好友 {target_name} ({target_dy_id})，请确认好友是否在抖音私信列表中或抖音号/ID是否正确。",
                             refreshed_cookies=_get_context_cookies(),
                         )
+                    active_page = opened_page
 
                 # 3. 输入并发送消息：文本拟人打字，[火花] 占位符走表情面板直接发送（带自动文字兜底）
-                input_box = self._find_input_box(page)
+                input_box = self._find_input_box(active_page)
                 if not input_box:
                     return ExecutionResult(
                         False,
@@ -313,12 +318,12 @@ class ExecutionService:
                         input_box.focus()
                         # 模拟真人输入
                         for char in value:
-                            page.keyboard.type(char, delay=random.randint(40, 150))
+                            active_page.keyboard.type(char, delay=random.randint(40, 150))
                     elif kind == "spark":
                         # 先发送已打好的文字，保持消息顺序
                         if pending_text:
                             text_content = "".join(pending_text)
-                            if not self._flush_text_message(page, input_box, text_content):
+                            if not self._flush_text_message(active_page, input_box, text_content):
                                 return ExecutionResult(
                                     False,
                                     "发送文本失败",
@@ -328,7 +333,7 @@ class ExecutionService:
                             pending_text = []
                             time.sleep(random.uniform(0.8, 1.5))
 
-                        ok, reason, used_fallback = self._send_spark_sticker(page, input_box)
+                        ok, reason, used_fallback = self._send_spark_sticker(active_page, input_box)
                         if not ok:
                             return ExecutionResult(
                                 False,
@@ -342,7 +347,7 @@ class ExecutionService:
 
                 if pending_text:
                     text_content = "".join(pending_text)
-                    if not self._flush_text_message(page, input_box, text_content):
+                    if not self._flush_text_message(active_page, input_box, text_content):
                         return ExecutionResult(
                             False,
                             "发送文本失败",
@@ -407,45 +412,67 @@ class ExecutionService:
             pass
         return None
 
-    def _open_user_profile_and_chat(self, page: Page, target_name: str, dy_id: str) -> bool:
-        """多级兜底：如果最近会话列表中找不到好友，通过用户个人主页或搜索唤起私信会话。
+    def _open_user_profile_and_chat(self, page: Page, context: Any, target_name: str, dy_id: str) -> Page | None:
+        """多级兜底：如果最近会话列表中找不到好友，通过直连会话、个人主页或用户搜索唤起私信会话。
 
-        彻底解决几天未聊天好友在网页端最近列表中沉底的问题。
+        支持处理 target='_blank' 产生的弹出新标签页。
         """
         if not dy_id and not target_name:
+            return None
+
+        chat_btn_selectors = [
+            'button:has-text("私信")',
+            'button:has-text("发私信")',
+            'div[role="button"]:has-text("私信")',
+            'div[role="button"]:has-text("发私信")',
+            '[data-e2e="user-chat-button"]',
+            '[data-e2e="user-info-chat"]',
+            '[class*="chat-btn"]',
+            '[class*="message-btn"]',
+            '[class*="chatBtn"]',
+            '[class*="msg-btn"]',
+            '.semi-button:has-text("私信")',
+        ]
+
+        def _try_click_chat_button(target_page: Page) -> bool:
+            self._dismiss_dialogs(target_page)
+            for sel in chat_btn_selectors:
+                try:
+                    btn = target_page.locator(sel).first
+                    if btn.count() and btn.is_visible():
+                        btn.click(timeout=3000)
+                        time.sleep(random.uniform(1.5, 2.5))
+                        return True
+                except Exception:
+                    continue
             return False
 
         try:
-            # 策略 A: 若 ID 是加密 sec_uid（以 MS4w 开头或超长串），直接直连个人主页
+            # 策略 A: 若 ID 是加密 sec_uid（以 MS4w 开头或超长串），优先直连 /chat 会话或个人主页
             if dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
-                user_url = f"https://www.douyin.com/user/{dy_id}"
-                page.goto(user_url, timeout=35000, wait_until="domcontentloaded")
-                time.sleep(random.uniform(2.0, 3.5))
-                self._dismiss_dialogs(page)
+                # 尝试直连会话
+                try:
+                    direct_chat_url = f"https://www.douyin.com/chat?to_sec_uid={dy_id}"
+                    page.goto(direct_chat_url, timeout=35000, wait_until="domcontentloaded")
+                    time.sleep(random.uniform(2.0, 3.0))
+                    self._dismiss_dialogs(page)
+                    if self._find_input_box(page):
+                        return page
+                except Exception:
+                    pass
 
-                chat_btn_selectors = [
-                    'button:has-text("私信")',
-                    'button:has-text("发私信")',
-                    'div[role="button"]:has-text("私信")',
-                    'div[role="button"]:has-text("发私信")',
-                    '[data-e2e="user-chat-button"]',
-                    '[data-e2e="user-info-chat"]',
-                    '[class*="chat-btn"]',
-                    '[class*="message-btn"]',
-                    '[class*="chatBtn"]',
-                    '[class*="msg-btn"]',
-                    '.semi-button:has-text("私信")',
-                ]
-                for selector in chat_btn_selectors:
-                    try:
-                        btn = page.locator(selector).first
-                        if btn.count() and btn.is_visible():
-                            btn.click(timeout=3000)
-                            time.sleep(random.uniform(1.8, 3.0))
-                            if self._find_input_box(page):
-                                return True
-                    except Exception:
-                        continue
+                # 尝试进入个人主页点击私信
+                try:
+                    user_url = f"https://www.douyin.com/user/{dy_id}"
+                    page.goto(user_url, timeout=35000, wait_until="domcontentloaded")
+                    time.sleep(random.uniform(2.0, 3.5))
+                    self._dismiss_dialogs(page)
+                    _try_click_chat_button(page)
+                    for p in context.pages:
+                        if self._find_input_box(p):
+                            return p
+                except Exception:
+                    pass
 
             # 策略 B: 尝试通过抖音全站用户搜索定位好友
             search_query = dy_id if (dy_id and not dy_id.startswith("MS4w") and dy_id != target_name) else target_name
@@ -456,43 +483,36 @@ class ExecutionService:
                 time.sleep(random.uniform(2.5, 4.0))
                 self._dismiss_dialogs(page)
 
-                # 1. 尝试直接点击卡片中的"私信"按钮
-                for selector in ['button:has-text("私信")', 'button:has-text("发私信")', '[class*="chat"] button']:
-                    try:
-                        btn = page.locator(selector).first
-                        if btn.count() and btn.is_visible():
-                            btn.click(timeout=3000)
-                            time.sleep(random.uniform(1.8, 3.0))
-                            if self._find_input_box(page):
-                                return True
-                    except Exception:
-                        continue
+                # 1. 尝试直接点击搜索卡片中的"私信"按钮
+                if _try_click_chat_button(page):
+                    for p in context.pages:
+                        if self._find_input_box(p):
+                            return p
 
-                # 2. 尝试点击匹配的用户进入主页再发私信
+                # 2. 尝试点击匹配的用户卡片进入主页
                 norm_name = normalize_friend_name(target_name)
-                for candidate in page.locator("[class*='user-info'], [class*='user-item'], [class*='search-result-card']").all()[:5]:
+                candidate_locators = page.locator("[class*='user-info'], [class*='user-item'], [class*='search-result-card']").all()[:6]
+                for candidate in candidate_locators:
                     try:
                         card_text = candidate.inner_text(timeout=1000) or ""
                         if target_name in card_text or (norm_name and norm_name in normalize_friend_name(card_text)):
+                            page_count_before = len(context.pages)
                             candidate.click(timeout=3000)
                             time.sleep(2.5)
-                            self._dismiss_dialogs(page)
-                            for selector in ['button:has-text("私信")', 'button:has-text("发私信")']:
-                                try:
-                                    btn = page.locator(selector).first
-                                    if btn.count() and btn.is_visible():
-                                        btn.click(timeout=3000)
-                                        time.sleep(2.0)
-                                        if self._find_input_box(page):
-                                            return True
-                                except Exception:
-                                    continue
+
+                            # 检查是否产生了新 Tab
+                            active_tab = context.pages[-1] if len(context.pages) > page_count_before else page
+                            self._dismiss_dialogs(active_tab)
+                            _try_click_chat_button(active_tab)
+                            for p in context.pages:
+                                if self._find_input_box(p):
+                                    return p
                             break
                     except Exception:
                         continue
         except Exception:
             pass
-        return False
+        return None
 
     def _check_login_required(self, page: Page) -> bool:
         """检查页面是否出现了登录遮罩或登录表单。"""
@@ -918,30 +938,51 @@ class ExecutionService:
 
     def _parse_cookies(self, cookie_text: str) -> list[dict]:
         """解析 Cookie 字符串或 JSON 数据为 Playwright 格式。"""
+        stripped = cookie_text.strip()
+        if stripped.lower().startswith("cookie:"):
+            stripped = stripped[7:].strip()
+
         try:
-            data = json.loads(cookie_text.strip())
+            data = json.loads(stripped)
+            items = []
             if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                if "cookies" in data and isinstance(data["cookies"], list):
+                    items = data["cookies"]
+                else:
+                    items = [{"name": k, "value": str(v), "domain": ".douyin.com", "path": "/"} for k, v in data.items()]
+
+            if items:
                 clean_cookies = []
-                for item in data:
+                for item in items:
                     if not isinstance(item, dict):
                         continue
                     name = str(item.get("name", "")).strip()
                     val = str(item.get("value", "")).strip()
-                    if not name:
+                    if not name or not val:
                         continue
+                    domain = str(item.get("domain", "")).strip()
+                    if not domain or "douyin.com" in domain:
+                        domain = ".douyin.com"
+
                     c = {
                         "name": name,
                         "value": val,
-                        "domain": str(item.get("domain", ".douyin.com")),
-                        "path": str(item.get("path", "/")),
+                        "domain": domain,
+                        "path": "/",
                     }
-                    ss = item.get("sameSite")
-                    if ss in ["Strict", "Lax", "None"]:
-                        c["sameSite"] = ss
+                    same_site = str(item.get("sameSite", "")).strip().lower()
+                    if same_site in ("strict",):
+                        c["sameSite"] = "Strict"
+                    elif same_site in ("lax", "unspecified"):
+                        c["sameSite"] = "Lax"
+                    elif same_site in ("none", "no_restriction"):
+                        c["sameSite"] = "None"
+
                     if "expires" in item and isinstance(item["expires"], (int, float)) and item["expires"] > 0:
                         c["expires"] = item["expires"]
-                    if "secure" in item and isinstance(item["secure"], bool):
-                        c["secure"] = item["secure"]
+                    c["secure"] = item.get("secure", True) if isinstance(item.get("secure"), bool) else True
                     clean_cookies.append(c)
                 if clean_cookies:
                     return clean_cookies
@@ -949,18 +990,19 @@ class ExecutionService:
             pass
 
         cookies = []
-        for part in cookie_text.split(";"):
+        for part in stripped.split(";"):
             if "=" not in part:
                 continue
             name, value = part.split("=", 1)
             name_clean = name.strip()
             val_clean = value.strip()
-            if name_clean:
+            if name_clean and val_clean:
                 cookies.append({
                     "name": name_clean,
                     "value": val_clean,
                     "domain": ".douyin.com",
                     "path": "/",
+                    "secure": True,
                 })
         return cookies
 

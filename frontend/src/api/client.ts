@@ -1,10 +1,13 @@
 import type {
   Account,
+  AccountCheckResult,
   AutoScheduleSummary,
   DashboardSummary,
   DispatchSource,
   Friend,
+  FriendCreateRequest,
   FriendStrategyUpdate,
+  FriendUpdateRequest,
   MessageRow,
   MessageType,
   PaginatedLogsResponse,
@@ -13,6 +16,7 @@ import type {
   RunStatus,
   SchedulePreviewResponse,
   SystemSettingsResponse,
+  SystemSettingsUpdateRequest,
   SystemStatusResponse,
 } from "../types";
 
@@ -180,6 +184,43 @@ export const api = {
       if (!res.ok) throw new Error("删除失败");
     });
   },
+  createFriend(accountId: number, data: FriendCreateRequest) {
+    return request<Friend>(`/api/accounts/${accountId}/friends`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+  updateFriend(friendId: number, data: FriendUpdateRequest) {
+    return request<Friend>(`/api/accounts/friends/${friendId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  },
+  deleteFriend(friendId: number) {
+    const token = getAdminToken();
+    return fetch(`/api/accounts/friends/${friendId}`, {
+      method: "DELETE",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }).then((res) => {
+      if (!res.ok) throw new Error("删除好友失败");
+    });
+  },
+  batchDeleteFriends(friendIds: number[]) {
+    return request<{ message: string; deleted_count: number }>("/api/accounts/friends/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ friend_ids: friendIds }),
+    });
+  },
+  checkAccount(accountId: number) {
+    return request<AccountCheckResult>(`/api/accounts/${accountId}/check`, {
+      method: "POST",
+    });
+  },
+  checkAllAccounts() {
+    return request<AccountCheckResult[]>("/api/accounts/check-all", {
+      method: "POST",
+    });
+  },
   listFriends(accountId: number) {
     return request<Friend[]>(`/api/accounts/${accountId}/friends`);
   },
@@ -230,6 +271,12 @@ export const api = {
   },
   getSystemSettings() {
     return request<SystemSettingsResponse>("/api/system/settings");
+  },
+  updateSystemSettings(data: SystemSettingsUpdateRequest) {
+    return request<SystemSettingsResponse>("/api/system/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
   },
 };
 

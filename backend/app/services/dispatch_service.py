@@ -112,7 +112,18 @@ def dispatch_active_messages(
     global_state.blocked_point = ""
 
     try:
+        from .app_settings_service import get_setting_str
         settings = get_settings()
+        db_manual_review = get_setting_str(db, "manual_review_mode", "")
+        manual_review = (
+            (db_manual_review.lower() in {"1", "true", "yes", "on"})
+            if db_manual_review
+            else settings.manual_review_mode
+        )
+        db_jitter_min = get_setting_str(db, "dispatch_jitter_min_seconds", "")
+        jitter_min = int(db_jitter_min) if db_jitter_min.isdigit() else settings.dispatch_jitter_min_seconds
+        db_jitter_max = get_setting_str(db, "dispatch_jitter_max_seconds", "")
+        jitter_max = int(db_jitter_max) if db_jitter_max.isdigit() else settings.dispatch_jitter_max_seconds
         current_time = get_local_now()
         active_friends = _load_active_friends(
             db,
@@ -138,10 +149,10 @@ def dispatch_active_messages(
         created_logs = 0
         for index, friend in enumerate(active_friends):
             task = tasks_by_friend_id.get(friend.id)
-            if is_auto_cron and not settings.manual_review_mode and index > 0:
+            if is_auto_cron and not manual_review and index > 0:
                 _wait_between_auto_tasks(
-                    settings.dispatch_jitter_min_seconds,
-                    settings.dispatch_jitter_max_seconds,
+                    jitter_min,
+                    jitter_max,
                 )
 
             _mark_current_friend(friend)
@@ -153,7 +164,7 @@ def dispatch_active_messages(
                 db,
                 friend,
                 current_time=current_time,
-                manual_review_mode=settings.manual_review_mode,
+                manual_review_mode=manual_review,
             )
 
             if task:

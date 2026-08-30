@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..database import SessionLocal
 from ..models import Friend
-from .app_settings_service import is_auto_schedule_enabled
+from .app_settings_service import get_scheduler_scan_interval, is_auto_schedule_enabled
 from .dispatch_service import dispatch_active_messages
 from .schedule_service import compute_friend_next_run_at, get_local_now, normalize_schedule_window
 from ..state import global_state
@@ -23,14 +23,14 @@ def run_dispatch_scan(db: Session) -> None:
     独立成函数以便集成测试直接调用；APScheduler 任务只是它的定时外壳。
     """
     now = get_local_now()
-    settings = get_settings()
+    scan_interval = get_scheduler_scan_interval(db)
     global_state.scan_started_at = now
     auto_schedule_enabled = is_auto_schedule_enabled(db)
     global_state.mode = "scanning"
     global_state.current_step = "正在扫描自动续火计划"
     global_state.status_text = "自动续火扫描中"
     global_state.last_scan_at = now
-    global_state.next_scan_at = now + timedelta(seconds=settings.scheduler_scan_interval_seconds)
+    global_state.next_scan_at = now + timedelta(seconds=scan_interval)
     global_state.current_wait_seconds = 0
     global_state.retry_remaining = 0
     global_state.blocked_point = ""

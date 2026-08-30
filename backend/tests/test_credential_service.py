@@ -82,6 +82,74 @@ class CredentialServiceTests(unittest.TestCase):
         friend_a = self.db.query(Friend).filter(Friend.friend_dy_id == "friend_a_id").one()
         self.assertEqual(friend_a.friend_nickname, "好友A(改名)")
 
+    def test_manual_add_and_update_and_delete_friend(self):
+        from backend.app.schemas import FriendCreateRequest, FriendUpdateRequest
+
+        # 1. 手动添加好友
+        create_req = FriendCreateRequest(
+            friend_nickname="手动好友D",
+            friend_dy_id="custom_d_id",
+            friend_avatar="http://avatar.d",
+            is_active=True,
+            schedule_window="07:00-09:00",
+            frequency_days=2,
+            message_type="fixed",
+            message_content="[火花]",
+        )
+        created = self.service.add_custom_friend(self.db, self.account, create_req)
+        self.assertEqual(created.friend_nickname, "手动好友D")
+        self.assertEqual(created.schedule_window, "07:00-09:00")
+        self.assertTrue(created.is_active)
+        self.assertIsNotNone(created.next_run_at)
+        self.assertIsNotNone(created.message)
+        self.assertEqual(created.message.message_content, "[火花]")
+
+        # 2. 修改好友
+        update_req = FriendUpdateRequest(
+            friend_nickname="手动好友D(已修改)",
+            schedule_window="08:00-10:00",
+            message_content="早安[火花]",
+        )
+        updated = self.service.update_friend(self.db, created, update_req)
+        self.assertEqual(updated.friend_nickname, "手动好友D(已修改)")
+        self.assertEqual(updated.schedule_window, "08:00-10:00")
+        self.assertEqual(updated.message.message_content, "早安[火花]")
+
+        # 3. 删除单个好友
+        self.service.delete_friend(self.db, self.friend_b)
+        remaining = self.db.query(Friend).filter(Friend.account_id == self.account.id).all()
+        self.assertEqual(len(remaining), 2)
+
+        # 4. 批量删除好友
+        ids_to_delete = [self.friend_a.id, created.id]
+        deleted_count = self.service.batch_delete_friends(self.db, ids_to_delete)
+        self.assertEqual(deleted_count, 2)
+        all_left = self.db.query(Friend).filter(Friend.account_id == self.account.id).all()
+        self.assertEqual(len(all_left), 0)
+
+    def test_cookie_normalization_and_parsing(self):
+        # 1. 常见 header 字符串
+        raw_header = "Cookie: sessionid=test_session_123; sid_guard=test_guard; passport_csrf_token=csrf_val"
+        cookies = self.service._to_playwright_cookies(raw_header)
+        self.assertEqual(len(cookies), 3)
+        self.assertEqual(cookies[0]["domain"], ".douyin.com")
+        self.assertEqual(cookies[0]["path"], "/")
+
+        # 2. JSON 数组 (带各插件导出格式)
+        json_array = """[
+            {"name": "sessionid", "value": "abc", "domain": "www.douyin.com", "sameSite": "no_restriction"},
+            {"name": "uid_tt", "value": "12345", "domain": "douyin.com", "expires": 1893456000}
+        ]"""
+        pw_cookies = self.service._to_playwright_cookies(json_array)
+        self.assertEqual(len(pw_cookies), 2)
+        self.assertEqual(pw_cookies[0]["domain"], ".douyin.com")
+        self.assertEqual(pw_cookies[0]["sameSite"], "None")
+        self.assertEqual(pw_cookies[1]["domain"], ".douyin.com")
+
+        # 3. 过期时间提取
+        expires = self.service.extract_cookie_expires_at(json_array)
+        self.assertIsNotNone(expires)
+
 
 if __name__ == "__main__":
     unittest.main()

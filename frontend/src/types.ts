@@ -210,13 +210,65 @@ export interface DashboardSummary {
   latest_logs: RunLog[];
 }
 
+export interface FriendCreateRequest {
+  friend_nickname: string;
+  friend_dy_id: string;
+  friend_avatar?: string;
+  is_active?: boolean;
+  schedule_window?: string;
+  frequency_days?: number;
+  cooldown_minutes?: number;
+  retry_limit?: number;
+  retry_cooldown_minutes?: number;
+  message_type?: MessageType;
+  message_content?: string;
+}
+
+export interface FriendUpdateRequest {
+  friend_nickname?: string;
+  friend_dy_id?: string;
+  friend_avatar?: string;
+  is_active?: boolean;
+  schedule_window?: string;
+  frequency_days?: number;
+  cooldown_minutes?: number;
+  retry_limit?: number;
+  retry_cooldown_minutes?: number;
+  message_type?: MessageType;
+  message_content?: string;
+}
+
+export interface SystemSettingsUpdateRequest {
+  default_schedule_window?: string;
+  scheduler_scan_interval_seconds?: number;
+  dispatch_jitter_min_seconds?: number;
+  dispatch_jitter_max_seconds?: number;
+  manual_review_mode?: boolean;
+  webhook_url?: string;
+  admin_token?: string;
+}
+
+export interface AccountCheckResult {
+  account_id: number;
+  nickname: string;
+  dy_id: string;
+  status: AccountStatus;
+  status_reason: string;
+  cookie_expires_at: string | null;
+  cookie_updated_at: string | null;
+  friends_count: number;
+}
+
 export interface SystemSettingsResponse {
   app_name: string;
   api_prefix: string;
   admin_token_configured: boolean;
   scheduler_enabled: boolean;
   scheduler_scan_interval_seconds: number;
+  dispatch_jitter_min_seconds: number;
+  dispatch_jitter_max_seconds: number;
   manual_review_mode: boolean;
+  webhook_url: string;
   sqlite_path: string;
   secret_key_path: string;
   cors_origins: string[];

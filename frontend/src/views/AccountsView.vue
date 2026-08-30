@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, reactive } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus, Refresh, Key, Edit, Delete, Search, UserFilled, CircleCheck, Check, Close } from "@element-plus/icons-vue";
+import { Plus, Refresh, Key, Edit, Delete, Search, Check, Close, Aim } from "@element-plus/icons-vue";
 
 import { api } from "../api/client";
-import type { Account, Friend } from "../types";
+import type { Account, AccountCheckResult, Friend, FriendCreateRequest, FriendUpdateRequest } from "../types";
 
 const accounts = ref<Account[]>([]);
 const loading = ref(false);
+const checkingAll = ref(false);
+const checkingAccount = reactive<Record<number, boolean>>({});
 const refreshingAccount = reactive<Record<number, boolean>>({});
 const importDialogVisible = ref(false);
 const importing = ref(false);
@@ -40,11 +42,49 @@ const editForm = ref({
   proxy_url: "",
 });
 
+// 好友管理弹窗与列表状态
 const friendDialogVisible = ref(false);
 const currentAccount = ref<Account | null>(null);
 const currentFriends = ref<Friend[]>([]);
 const friendLoading = ref(false);
 const togglingAll = ref(false);
+const selectedFriendIds = ref<number[]>([]);
+const batchDeleting = ref(false);
+
+// 手动添加好友弹窗
+const addFriendDialogVisible = ref(false);
+const addingFriend = ref(false);
+const addFriendForm = reactive<FriendCreateRequest>({
+  friend_nickname: "",
+  friend_dy_id: "",
+  friend_avatar: "",
+  is_active: true,
+  schedule_window: "06:00-08:00",
+  frequency_days: 1,
+  cooldown_minutes: 0,
+  retry_limit: 2,
+  retry_cooldown_minutes: 30,
+  message_type: "fixed",
+  message_content: "[火花]",
+});
+
+// 编辑好友弹窗
+const editFriendDialogVisible = ref(false);
+const editingFriend = ref(false);
+const editingFriendId = ref<number>(0);
+const editFriendForm = reactive<FriendUpdateRequest>({
+  friend_nickname: "",
+  friend_dy_id: "",
+  friend_avatar: "",
+  is_active: true,
+  schedule_window: "06:00-08:00",
+  frequency_days: 1,
+  cooldown_minutes: 0,
+  retry_limit: 2,
+  retry_cooldown_minutes: 30,
+  message_type: "fixed",
+  message_content: "[火花]",
+});
 
 const filteredFriends = computed(() => {
   if (!friendSearchQuery.value.trim()) return currentFriends.value;
@@ -68,11 +108,6 @@ function statusLabel(status: Account["status"]) {
   if (status === "healthy") return "正常托管中";
   if (status === "invalid") return "Cookie 已失效";
   return "待确认";
-}
-
-function formatCookieDate(value: string | null) {
-  if (!value) return "未知";
-  return new Date(value).toLocaleString();
 }
 
 function cookieStatusLabel(account: Account) {
@@ -107,6 +142,37 @@ async function loadAccounts() {
 async function manualRefresh() {
   await loadAccounts();
   ElMessage.success("账号列表已刷新");
+}
+
+async function handleCheckSingleAccount(account: Account) {
+  checkingAccount[account.id] = true;
+  try {
+    const res = await api.checkAccount(account.id);
+    await loadAccounts();
+    if (res.status === "healthy") {
+      ElMessage.success(`账号【${res.nickname}】凭证有效，已完成保活检测！`);
+    } else {
+      ElMessage.warning(`账号【${res.nickname}】凭证异常：${res.status_reason}`);
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "检测账号失败");
+  } finally {
+    checkingAccount[account.id] = false;
+  }
+}
+
+async function handleCheckAllAccounts() {
+  checkingAll.value = true;
+  try {
+    const results = await api.checkAllAccounts();
+    await loadAccounts();
+    const healthyCount = results.filter((r) => r.status === "healthy").length;
+    ElMessage.success(`全量检测完成：共检测 ${results.length} 个账号，${healthyCount} 个状态正常。`);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "批量检测失败");
+  } finally {
+    checkingAll.value = false;
+  }
 }
 
 async function handleRefreshAccount(account: Account) {
@@ -216,6 +282,7 @@ async function handleRemoveAccount(account: Account) {
 async function openFriendDialog(account: Account) {
   currentAccount.value = account;
   friendSearchQuery.value = "";
+  selectedFriendIds.value = [];
   friendDialogVisible.value = true;
   await loadFriends(account.id);
 }
@@ -277,6 +344,143 @@ async function batchToggleFriends(enable: boolean) {
   }
 }
 
+function openAddFriendDialog() {
+  addFriendForm.friend_nickname = "";
+  addFriendForm.friend_dy_id = "";
+  addFriendForm.friend_avatar = "";
+  addFriendForm.is_active = true;
+  addFriendForm.schedule_window = "06:00-08:00";
+  addFriendForm.frequency_days = 1;
+  addFriendForm.cooldown_minutes = 0;
+  addFriendForm.message_type = "fixed";
+  addFriendForm.message_content = "[火花]";
+  addFriendDialogVisible.value = true;
+}
+
+async function submitAddFriend() {
+  if (!currentAccount.value) return;
+  if (!addFriendForm.friend_nickname.trim() || !addFriendForm.friend_dy_id.trim()) {
+    ElMessage.warning("请填写好友昵称与抖音号/sec_uid");
+    return;
+  }
+  addingFriend.value = true;
+  try {
+    await api.createFriend(currentAccount.value.id, addFriendForm);
+    ElMessage.success("成功添加好友！");
+    addFriendDialogVisible.value = false;
+    await loadFriends(currentAccount.value.id);
+    await loadAccounts();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "添加好友失败");
+  } finally {
+    addingFriend.value = false;
+  }
+}
+
+function openEditFriendDialog(friend: Friend) {
+  editingFriendId.value = friend.id;
+  editFriendForm.friend_nickname = friend.friend_nickname;
+  editFriendForm.friend_dy_id = friend.friend_dy_id;
+  editFriendForm.friend_avatar = friend.friend_avatar || "";
+  editFriendForm.is_active = friend.is_active;
+  editFriendForm.schedule_window = friend.schedule_window;
+  editFriendForm.frequency_days = friend.frequency_days;
+  editFriendForm.cooldown_minutes = friend.cooldown_minutes;
+  editFriendForm.retry_limit = friend.retry_limit;
+  editFriendForm.retry_cooldown_minutes = friend.retry_cooldown_minutes;
+  editFriendForm.message_type = friend.message_type || "fixed";
+  editFriendForm.message_content = friend.message_content || "[火花]";
+  editFriendDialogVisible.value = true;
+}
+
+async function submitEditFriend() {
+  if (!editingFriendId.value) return;
+  editingFriend.value = true;
+  try {
+    await api.updateFriend(editingFriendId.value, editFriendForm);
+    ElMessage.success("好友配置已更新！");
+    editFriendDialogVisible.value = false;
+    if (currentAccount.value) {
+      await loadFriends(currentAccount.value.id);
+      await loadAccounts();
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "更新好友失败");
+  } finally {
+    editingFriend.value = false;
+  }
+}
+
+async function handleDeleteFriend(friend: Friend) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除好友【${friend.friend_nickname}】吗？删除后将不再向其发送续火消息。`,
+      "确认删除好友",
+      { confirmButtonText: "确认删除", cancelButtonText: "取消", type: "warning" }
+    );
+  } catch {
+    return;
+  }
+
+  try {
+    await api.deleteFriend(friend.id);
+    ElMessage.success("好友已删除");
+    if (currentAccount.value) {
+      await loadFriends(currentAccount.value.id);
+      await loadAccounts();
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "删除好友失败");
+  }
+}
+
+async function handleBatchDeleteFriends() {
+  if (!selectedFriendIds.value.length) {
+    ElMessage.warning("请先勾选需要批量删除的好友");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定要批量删除选中的 ${selectedFriendIds.value.length} 位好友吗？`,
+      "批量删除确认",
+      { confirmButtonText: "确定删除", cancelButtonText: "取消", type: "danger" }
+    );
+  } catch {
+    return;
+  }
+
+  batchDeleting.value = true;
+  try {
+    const res = await api.batchDeleteFriends(selectedFriendIds.value);
+    ElMessage.success(res.message);
+    selectedFriendIds.value = [];
+    if (currentAccount.value) {
+      await loadFriends(currentAccount.value.id);
+      await loadAccounts();
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "批量删除失败");
+  } finally {
+    batchDeleting.value = false;
+  }
+}
+
+function toggleSelectAll(checked: boolean) {
+  if (checked) {
+    selectedFriendIds.value = filteredFriends.value.map((f) => f.id);
+  } else {
+    selectedFriendIds.value = [];
+  }
+}
+
+function toggleSelectFriend(id: number, checked: boolean) {
+  if (checked) {
+    if (!selectedFriendIds.value.includes(id)) selectedFriendIds.value.push(id);
+  } else {
+    selectedFriendIds.value = selectedFriendIds.value.filter((i) => i !== id);
+  }
+}
+
 onMounted(loadAccounts);
 </script>
 
@@ -288,8 +492,9 @@ onMounted(loadAccounts);
           <h2>账号资产与凭证管理</h2>
           <p class="section-subtitle">Cookie 凭证本地加密安全托管，自动执行时支持真人拟态与无感保活。</p>
         </div>
-        <div style="display: flex; gap: 10px">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap">
           <el-button type="primary" :icon="Plus" @click="importDialogVisible = true">导入新账号</el-button>
+          <el-button type="warning" plain :icon="Aim" :loading="checkingAll" @click="handleCheckAllAccounts">一键检测全部保活</el-button>
           <el-button plain :icon="Refresh" :loading="loading" @click="manualRefresh">刷新列表</el-button>
         </div>
       </div>
@@ -351,6 +556,7 @@ onMounted(loadAccounts);
 
           <div class="account-actions">
             <el-button type="primary" plain size="small" @click="openFriendDialog(account)">管理好友</el-button>
+            <el-button type="success" plain size="small" :icon="Aim" :loading="checkingAccount[account.id]" @click="handleCheckSingleAccount(account)">检测保活</el-button>
             <el-button plain size="small" :loading="refreshingAccount[account.id]" @click="handleRefreshAccount(account)">同步资料</el-button>
             <el-button plain size="small" :icon="Key" @click="openCookieDialog(account)">更新凭证</el-button>
             <el-button plain size="small" :icon="Edit" @click="openEditDialog(account)">编辑</el-button>
@@ -420,40 +626,71 @@ onMounted(loadAccounts);
     <el-dialog
       v-model="friendDialogVisible"
       :title="currentAccount ? `${currentAccount.nickname} · 续火好友管理` : '好友管理'"
-      width="720px"
+      width="820px"
     >
       <div class="friend-dialog-header">
         <div class="meta">{{ activeTotalText }}</div>
         <div class="friend-dialog-actions">
+          <el-button size="small" type="primary" :icon="Plus" @click="openAddFriendDialog">添加好友</el-button>
           <el-button size="small" plain :loading="togglingAll" :icon="Check" @click="batchToggleFriends(true)">全部激活</el-button>
           <el-button size="small" plain :loading="togglingAll" :icon="Close" @click="batchToggleFriends(false)">全部关闭</el-button>
+          <el-button
+            v-if="selectedFriendIds.length > 0"
+            size="small"
+            type="danger"
+            plain
+            :icon="Delete"
+            :loading="batchDeleting"
+            @click="handleBatchDeleteFriends"
+          >
+            批量删除 ({{ selectedFriendIds.length }})
+          </el-button>
           <el-button size="small" type="primary" plain :loading="friendLoading" :icon="Refresh" @click="refreshFriends">重新拉取私信列表</el-button>
         </div>
       </div>
 
-      <div style="margin-bottom: 12px">
+      <div class="friend-search-bar">
         <el-input
           v-model="friendSearchQuery"
           :prefix-icon="Search"
           placeholder="快速搜索好友昵称或抖音号..."
           clearable
           size="small"
+          style="flex: 1"
         />
+        <el-checkbox
+          :model-value="selectedFriendIds.length === filteredFriends.length && filteredFriends.length > 0"
+          :indeterminate="selectedFriendIds.length > 0 && selectedFriendIds.length < filteredFriends.length"
+          @change="toggleSelectAll($event as boolean)"
+        >
+          全选当前列表
+        </el-checkbox>
       </div>
 
       <div v-loading="friendLoading" class="friend-dialog-list">
         <div v-for="friend in filteredFriends" :key="friend.id" class="friend-row">
+          <el-checkbox
+            :model-value="selectedFriendIds.includes(friend.id)"
+            @change="toggleSelectFriend(friend.id, $event as boolean)"
+          />
           <el-avatar :size="42" :src="friend.friend_avatar" class="avatar">
             <span>{{ friend.friend_nickname.charAt(0) }}</span>
           </el-avatar>
           <div style="min-width: 0; flex: 1">
-            <strong class="friend-name-text">{{ friend.friend_nickname }}</strong>
-            <div class="meta mono" style="font-size: 12px">{{ friend.friend_dy_id }}</div>
+            <div style="display: flex; align-items: center; gap: 8px">
+              <strong class="friend-name-text">{{ friend.friend_nickname }}</strong>
+              <el-tag size="small" type="info" class="mono">{{ friend.friend_dy_id }}</el-tag>
+            </div>
             <div v-if="friend.is_active" class="active-plan-text">
               ⏰ 计划时段 {{ friend.schedule_window }} · 下次执行 {{ formatScheduleTime(friend.next_run_at) }}
             </div>
+            <div v-if="friend.message_content" class="friend-msg-preview">
+              💬 {{ friend.message_content }}
+            </div>
           </div>
-          <div style="display: flex; align-items: center; gap: 12px">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <el-button size="small" plain :icon="Edit" @click="openEditFriendDialog(friend)">编辑</el-button>
+            <el-button size="small" type="danger" plain :icon="Delete" @click="handleDeleteFriend(friend)" />
             <el-switch
               :model-value="friend.is_active"
               active-text="激活"
@@ -465,6 +702,65 @@ onMounted(loadAccounts);
         </div>
         <el-empty v-if="filteredFriends.length === 0" description="未搜索到符合条件的好友" :image-size="60" />
       </div>
+    </el-dialog>
+
+    <!-- 手动添加好友弹窗 -->
+    <el-dialog v-model="addFriendDialogVisible" title="手动添加好友" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="好友昵称" required>
+          <el-input v-model="addFriendForm.friend_nickname" placeholder="例如：小明" />
+        </el-form-item>
+        <el-form-item label="抖音号 / 唯一标识 / sec_uid" required>
+          <el-input v-model="addFriendForm.friend_dy_id" placeholder="抖音号、搜索唯一标识或以 MS4w 开头的 sec_uid" />
+        </el-form-item>
+        <el-form-item label="头像 URL (可选)">
+          <el-input v-model="addFriendForm.friend_avatar" placeholder="https://..." />
+        </el-form-item>
+        <el-form-item label="续火时段 (24小时制)">
+          <el-input v-model="addFriendForm.schedule_window" placeholder="06:00-08:00" />
+        </el-form-item>
+        <el-form-item label="专属续火话术">
+          <el-input v-model="addFriendForm.message_content" placeholder="[火花]" />
+        </el-form-item>
+        <el-form-item label="立即激活续火">
+          <el-switch v-model="addFriendForm.is_active" active-text="开启" inactive-text="关闭" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="addFriendDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="addingFriend" @click="submitAddFriend">添加并保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 编辑好友配置弹窗 -->
+    <el-dialog v-model="editFriendDialogVisible" title="编辑好友续火配置" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="好友昵称">
+          <el-input v-model="editFriendForm.friend_nickname" />
+        </el-form-item>
+        <el-form-item label="抖音号 / sec_uid">
+          <el-input v-model="editFriendForm.friend_dy_id" />
+        </el-form-item>
+        <el-form-item label="头像 URL">
+          <el-input v-model="editFriendForm.friend_avatar" />
+        </el-form-item>
+        <el-form-item label="续火时段 (24小时制)">
+          <el-input v-model="editFriendForm.schedule_window" placeholder="06:00-08:00" />
+        </el-form-item>
+        <el-form-item label="续火频率 (天数)">
+          <el-input-number v-model="editFriendForm.frequency_days" :min="1" :max="30" />
+        </el-form-item>
+        <el-form-item label="发送内容 (支持 [火花] 表情标签)">
+          <el-input v-model="editFriendForm.message_content" placeholder="[火花]" />
+        </el-form-item>
+        <el-form-item label="激活状态">
+          <el-switch v-model="editFriendForm.is_active" active-text="激活" inactive-text="关闭" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="editFriendDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editingFriend" @click="submitEditFriend">保存配置</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -504,11 +800,21 @@ onMounted(loadAccounts);
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .friend-dialog-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.friend-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
 }
 
 .friend-dialog-list {
@@ -544,5 +850,11 @@ onMounted(loadAccounts);
   font-size: 12px;
   margin-top: 2px;
   font-weight: 500;
+}
+
+.friend-msg-preview {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 2px;
 }
 </style>

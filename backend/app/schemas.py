@@ -242,8 +242,57 @@ class AutoScheduleBatchStrategyUpdateRequest(BaseModel):
     schedule_window: str = Field(min_length=11, max_length=11)
     frequency_days: int = Field(ge=1, le=30)
     cooldown_minutes: int = Field(ge=0, le=1440)
-    retry_limit: int = Field(ge=0, le=10)
-    retry_cooldown_minutes: int = Field(ge=1, le=1440)
+class FriendCreateRequest(BaseModel):
+    friend_nickname: str = Field(min_length=1, max_length=100)
+    friend_dy_id: str = Field(min_length=1, max_length=100)
+    friend_avatar: str | None = ""
+    is_active: bool = True
+    schedule_window: str = Field(default="06:00-08:00", min_length=11, max_length=11)
+    frequency_days: int = Field(default=1, ge=1, le=30)
+    cooldown_minutes: int = Field(default=0, ge=0, le=1440)
+    retry_limit: int = Field(default=2, ge=0, le=10)
+    retry_cooldown_minutes: int = Field(default=30, ge=1, le=1440)
+    message_type: MessageType = MessageType.fixed
+    message_content: str = "[火花]"
+
+
+class FriendUpdateRequest(BaseModel):
+    friend_nickname: str | None = None
+    friend_dy_id: str | None = None
+    friend_avatar: str | None = None
+    is_active: bool | None = None
+    schedule_window: str | None = None
+    frequency_days: int | None = None
+    cooldown_minutes: int | None = None
+    retry_limit: int | None = None
+    retry_cooldown_minutes: int | None = None
+    message_type: MessageType | None = None
+    message_content: str | None = None
+
+
+class BatchDeleteFriendsRequest(BaseModel):
+    friend_ids: list[int]
+
+
+class SystemSettingsUpdateRequest(BaseModel):
+    default_schedule_window: str | None = None
+    scheduler_scan_interval_seconds: int | None = Field(default=None, ge=10, le=3600)
+    dispatch_jitter_min_seconds: int | None = Field(default=None, ge=0, le=300)
+    dispatch_jitter_max_seconds: int | None = Field(default=None, ge=0, le=600)
+    manual_review_mode: bool | None = None
+    webhook_url: str | None = None
+    admin_token: str | None = None
+
+
+class AccountCheckResult(BaseModel):
+    account_id: int
+    nickname: str
+    dy_id: str
+    status: AccountStatus
+    status_reason: str
+    cookie_expires_at: datetime | None
+    cookie_updated_at: datetime | None
+    friends_count: int
 
 
 class DashboardSummary(BaseModel):
@@ -263,7 +312,10 @@ class SystemSettingsResponse(BaseModel):
     admin_token_configured: bool
     scheduler_enabled: bool
     scheduler_scan_interval_seconds: int
+    dispatch_jitter_min_seconds: int
+    dispatch_jitter_max_seconds: int
     manual_review_mode: bool
+    webhook_url: str
     sqlite_path: str
     secret_key_path: str
     cors_origins: list[str]

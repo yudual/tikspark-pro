@@ -5,14 +5,18 @@ from sqlalchemy.orm import Session, joinedload
 from ..database import get_db
 from ..models import Account, Friend, Message, MessageType
 from ..schemas import (
+    AccountCheckResult,
     AccountCookieUpdateRequest,
     AccountImportRequest,
     AccountResponse,
     AccountUpdateRequest,
+    BatchDeleteFriendsRequest,
+    FriendCreateRequest,
     FriendResponse,
     FriendScheduleUpdateRequest,
     FriendStrategyUpdateRequest,
     FriendToggleRequest,
+    FriendUpdateRequest,
 )
 from ..services.credential_service import credential_service
 from ..services.schedule_service import (
@@ -96,6 +100,25 @@ def import_account(payload: AccountImportRequest, db: Session = Depends(get_db))
     return _serialize_account(account)
 
 
+@router.post("/check-all", response_model=list[AccountCheckResult])
+def check_all_accounts(db: Session = Depends(get_db)) -> list[AccountCheckResult]:
+    try:
+        return credential_service.check_all_accounts(db)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"批量检测失败: {exc}") from exc
+
+
+@router.post("/{account_id}/check", response_model=AccountCheckResult)
+def check_account_cookie(account_id: int, db: Session = Depends(get_db)) -> AccountCheckResult:
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    try:
+        return credential_service.check_account_status(db, account)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"检测保活失败: {exc}") from exc
+
+
 @router.put("/{account_id}/cookie", response_model=AccountResponse)
 def update_account_cookie(
     account_id: int,
@@ -146,6 +169,53 @@ def list_account_friends(account_id: int, db: Session = Depends(get_db)) -> list
         .all()
     )
     return [_serialize_friend(friend) for friend in friends]
+
+
+@router.post("/{account_id}/friends", response_model=FriendResponse, status_code=status.HTTP_201_CREATED)
+def create_custom_friend(
+    account_id: int, payload: FriendCreateRequest, db: Session = Depends(get_db)
+) -> FriendResponse:
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    try:
+        friend = credential_service.add_custom_friend(db, account, payload)
+        return _serialize_friend(friend)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/friends/{friend_id}", response_model=FriendResponse)
+def update_friend(
+    friend_id: int, payload: FriendUpdateRequest, db: Session = Depends(get_db)
+) -> FriendResponse:
+    friend = (
+        db.execute(select(Friend).options(joinedload(Friend.message)).where(Friend.id == friend_id))
+        .scalars()
+        .first()
+    )
+    if not friend:
+        raise HTTPException(status_code=404, detail="Friend not found.")
+    try:
+        updated = credential_service.update_friend(db, friend, payload)
+        return _serialize_friend(updated)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/friends/{friend_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_friend(friend_id: int, db: Session = Depends(get_db)):
+    friend = db.get(Friend, friend_id)
+    if not friend:
+        raise HTTPException(status_code=404, detail="Friend not found.")
+    credential_service.delete_friend(db, friend)
+    return None
+
+
+@router.post("/friends/batch-delete", status_code=status.HTTP_200_OK)
+def batch_delete_friends(payload: BatchDeleteFriendsRequest, db: Session = Depends(get_db)) -> dict:
+    count = credential_service.batch_delete_friends(db, payload.friend_ids)
+    return {"message": f"成功删除 {count} 位好友。", "deleted_count": count}
 
 
 @router.patch("/friends/{friend_id}/toggle", response_model=FriendResponse)
@@ -284,3 +354,4 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
     db.delete(account)
     db.commit()
     return None
+

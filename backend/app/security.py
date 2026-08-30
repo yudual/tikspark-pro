@@ -1,15 +1,21 @@
-from fastapi import Depends, HTTPException, Request, status
-
 from .config import get_settings
+from .database import SessionLocal
+from .models import AppSetting
 
 
 def require_admin_token(request: Request) -> None:
-    settings = get_settings()
-    if not settings.admin_token:
+    db = SessionLocal()
+    try:
+        setting = db.get(AppSetting, "admin_token")
+        active_token = setting.value if (setting and setting.value) else get_settings().admin_token
+    finally:
+        db.close()
+
+    if not active_token:
         return
 
     authorization = request.headers.get("authorization", "")
-    expected = f"Bearer {settings.admin_token}"
+    expected = f"Bearer {active_token}"
     if authorization == expected:
         return
 
