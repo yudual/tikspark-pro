@@ -160,12 +160,26 @@ def dispatch_active_messages(
                 mark_task_running(task)
             db.commit()
 
-            result_status, summary, details = _run_friend_task(
-                db,
-                friend,
-                current_time=current_time,
-                manual_review_mode=manual_review,
-            )
+            try:
+                result_status, summary, details = _run_friend_task(
+                    db,
+                    friend,
+                    current_time=current_time,
+                    manual_review_mode=manual_review,
+                )
+            except Exception as task_exc:
+                result_status = RunStatus.failed
+                summary = "执行异常"
+                details = f"任务处理异常: {task_exc}"
+                db.add(
+                    RunLog(
+                        friend_id=friend.id,
+                        status=result_status,
+                        summary=summary,
+                        details=details,
+                        created_at=get_local_now(),
+                    )
+                )
 
             if task:
                 mark_task_finished(task, result_status, summary, details)
@@ -177,6 +191,7 @@ def dispatch_active_messages(
             )
             created_logs += 1
             global_state.completed_tasks += 1
+            db.commit()
 
         db.commit()
         return created_logs
@@ -279,11 +294,11 @@ def _run_friend_task(
     result_status = RunStatus.success if result.success else RunStatus.failed
 
     refreshed_cookies = getattr(result, "refreshed_cookies", None)
-    if refreshed_cookies:
+    if result.success and refreshed_cookies and "sessionid" in refreshed_cookies:
         try:
             friend.account.cookie_text = get_secret_service().encrypt(refreshed_cookies)
             friend.account.cookie_updated_at = current_time
-            if result.success and friend.account.status != AccountStatus.healthy:
+            if friend.account.status != AccountStatus.healthy:
                 friend.account.status = AccountStatus.healthy
                 friend.account.status_reason = "会话活跃且已自动刷新凭证"
         except Exception:
