@@ -37,8 +37,14 @@ SEARCH_SELECTORS = (
     'input[placeholder*="搜索"]',
     'input[placeholder*="查找"]',
     'input[placeholder*="好友"]',
+    'input[placeholder*="用户"]',
     'input[type="search"]',
+    '.semi-input[placeholder*="搜索"]',
     '[class*="search-input"] input',
+    '[class*="searchInput"] input',
+    '[class*="search-box"] input',
+    '[data-e2e*="search"] input',
+    'input[class*="search"]',
 )
 SEND_BUTTON_SELECTORS = (
     'button:has-text("发送")',
@@ -461,14 +467,17 @@ class ExecutionService:
         """精准检测页面是否包含滑块验证码或验证码中间页。"""
         try:
             title = (page.title() or "").strip()
-            if any(k in title for k in ("验证码", "中间页", "安全验证", "captcha", "verify", "风控")):
+            if "验证码" in title or "安全验证" in title or "中间页" in title:
                 return True
             for frame in page.frames:
-                if any(k in frame.url for k in ("verifycenter/captcha", "rmc.bytedance.com", "byteimg.com", "captcha", "verify")):
+                if not frame.url or frame.url == "about:blank":
+                    continue
+                if any(k in frame.url for k in ("verifycenter/captcha", "rmc.bytedance.com")):
                     return True
-            content = page.content()
-            if "验证码中间页" in content or "secsdk" in content or "verifycenter" in content:
-                return True
+            for sel in ("#captcha_container", ".captcha-verify-image", "#captcha_verify_image", ".captcha_verify_container"):
+                loc = page.locator(sel).first
+                if loc.count() and loc.is_visible():
+                    return True
         except Exception:
             pass
         return False

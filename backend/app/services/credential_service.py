@@ -599,6 +599,7 @@ class CredentialService:
                 # 访问个人主页建立上下文
                 page.goto("https://www.douyin.com/user/self", timeout=50000, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
+                self._dismiss_non_login_dialogs(page)
 
                 extracted_data = page.evaluate(
                     """async () => {
