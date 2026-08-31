@@ -547,27 +547,25 @@ class ExecutionService:
         """
         for attempt in range(3):
             try:
-                captcha_frame = None
-                for frame in page.frames:
-                    if any(k in frame.url for k in ("verifycenter/captcha", "rmc.bytedance.com", "byteimg.com", "captcha", "verify")):
-                        captcha_frame = frame
-                        break
-                if not captcha_frame:
+                fl = page.frame_locator('iframe')
+                btn_loc = fl.locator('.captcha_verify_slide--button, .dragger-item, [class*="slide--button"], [class*="dragger"]').first
+                bg_loc = fl.locator('#captcha_verify_image').first
+                if not btn_loc.count() or not btn_loc.is_visible() or not bg_loc.count() or not bg_loc.is_visible():
                     if not self._is_captcha_page(page):
                         return True
-                    break
+                    time.sleep(1)
+                    continue
 
-                calc = captcha_frame.evaluate(solver_js)
+                calc = bg_loc.evaluate(solver_js)
                 if not calc or not calc.get("dragDistance"):
                     time.sleep(1)
                     continue
 
-                btn_loc = captcha_frame.locator('.captcha_verify_slide--button, .dragger-item, [class*="dragger"]').first
                 box = btn_loc.bounding_box()
                 if not box:
                     break
 
-                start_x = box["x"] + 15
+                start_x = box["x"] + box["width"] / 2
                 start_y = box["y"] + box["height"] / 2
                 distance = calc["dragDistance"]
 
@@ -575,18 +573,16 @@ class ExecutionService:
                 page.mouse.down()
                 time.sleep(0.08)
 
-                steps = random.randint(28, 38)
+                steps = random.randint(32, 45)
                 for i in range(1, steps + 1):
                     t = i / steps
                     progress = t * t * (3.0 - 2.0 * t)
-                    if t > 0.85:
-                        progress = progress + 0.01 * math.sin(t * math.pi)
                     cur_x = start_x + distance * progress
-                    cur_y = start_y + math.sin(t * math.pi * 3) * random.uniform(0.5, 1.8)
+                    cur_y = start_y + math.sin(t * math.pi * 3) * random.uniform(0.5, 1.5)
                     page.mouse.move(cur_x, cur_y)
-                    time.sleep(random.uniform(0.008, 0.022))
+                    time.sleep(random.uniform(0.008, 0.020))
 
-                time.sleep(0.12)
+                time.sleep(0.15)
                 page.mouse.up()
                 time.sleep(3.5)
 

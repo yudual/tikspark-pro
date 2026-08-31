@@ -626,12 +626,13 @@ class CredentialService:
                         } catch (e) {}
                     }
 
-                    // Fallback DOM 本人资料
                     const domNickname = document.querySelector('[data-e2e="user-info-nickname"]')?.innerText?.trim();
                     const domDyId = document.querySelector('[data-e2e="user-info-id"]')?.innerText?.replace('抖音号：', '')?.trim();
                     const domAvatar = document.querySelector('[data-e2e="user-avatar"] img')?.src || '';
+                    const isLoginFailed = (spotData.status_code === 8) || (domNickname === '未登录') || (!ownerSecUid && !selfUser.nickname && domNickname === '未登录');
 
                     return {
+                        isLoginFailed: isLoginFailed,
                         selfAccount: {
                             nickname: selfUser.nickname || domNickname || '抖音账号',
                             display_id: selfUser.unique_id || selfUser.short_id || domDyId || '',
@@ -716,15 +717,16 @@ class CredentialService:
             finally:
                 browser.close()
 
+        is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else False
         account_candidate = self._pick_account_candidate(candidates, parsed)
         friends = self._pick_friend_candidates(candidates, account_candidate, parsed)
 
-        if account_candidate is None and not friends:
+        if is_login_failed or (account_candidate is None and not friends):
             return SyncResult(
-                account_candidate=None,
+                account_candidate=account_candidate,
                 friends=[],
                 status=AccountStatus.invalid,
-                status_reason="未能从该 Cookie 读取到有效的账号资料，请确认 Cookie 是否完整且有效。",
+                status_reason="Cookie 凭证已过期或登录态已失效，请重新在电脑端登录抖音并复制最新 Cookie。",
                 refreshed_cookies=refreshed_cookies,
             )
 
