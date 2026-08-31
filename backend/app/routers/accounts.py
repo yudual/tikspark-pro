@@ -59,6 +59,7 @@ def _serialize_friend(friend: Friend) -> FriendResponse:
         id=friend.id,
         account_id=friend.account_id,
         friend_dy_id=repair_mojibake(friend.friend_dy_id),
+        sec_uid=getattr(friend, "sec_uid", "") or "",
         friend_nickname=repair_mojibake(friend.friend_nickname),
         friend_avatar=friend.friend_avatar,
         is_active=friend.is_active,

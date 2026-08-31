@@ -78,6 +78,7 @@ class Friend(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     friend_dy_id: Mapped[str] = mapped_column(String(100), default="")
+    sec_uid: Mapped[str] = mapped_column(String(150), default="")
     friend_nickname: Mapped[str] = mapped_column(String(100), default="未命名好友")
     friend_avatar: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)

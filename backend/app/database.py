@@ -83,6 +83,8 @@ def ensure_sqlite_schema() -> None:
         statements.append("ALTER TABLE friends ADD COLUMN retry_cooldown_minutes INTEGER DEFAULT 30")
     if "consecutive_failures" not in friend_columns:
         statements.append("ALTER TABLE friends ADD COLUMN consecutive_failures INTEGER DEFAULT 0")
+    if "sec_uid" not in friend_columns:
+        statements.append("ALTER TABLE friends ADD COLUMN sec_uid VARCHAR(150) DEFAULT ''")
     if "next_run_at" not in friend_columns:
         statements.append("ALTER TABLE friends ADD COLUMN next_run_at DATETIME")
     if "last_run_at" not in friend_columns:

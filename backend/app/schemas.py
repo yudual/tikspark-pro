@@ -70,6 +70,7 @@ class FriendResponse(BaseModel):
     id: int
     account_id: int
     friend_dy_id: str
+    sec_uid: str = ""
     friend_nickname: str
     friend_avatar: str
     is_active: bool
@@ -245,6 +246,7 @@ class AutoScheduleBatchStrategyUpdateRequest(BaseModel):
 class FriendCreateRequest(BaseModel):
     friend_nickname: str = Field(min_length=1, max_length=100)
     friend_dy_id: str = Field(min_length=1, max_length=100)
+    sec_uid: str | None = ""
     friend_avatar: str | None = ""
     is_active: bool = True
     schedule_window: str = Field(default="06:00-08:00", min_length=11, max_length=11)
@@ -259,6 +261,7 @@ class FriendCreateRequest(BaseModel):
 class FriendUpdateRequest(BaseModel):
     friend_nickname: str | None = None
     friend_dy_id: str | None = None
+    sec_uid: str | None = None
     friend_avatar: str | None = None
     is_active: bool | None = None
     schedule_window: str | None = None

@@ -23,6 +23,7 @@ export interface Friend {
   id: number;
   account_id: number;
   friend_dy_id: string;
+  sec_uid?: string;
   friend_nickname: string;
   friend_avatar: string;
   is_active: boolean;

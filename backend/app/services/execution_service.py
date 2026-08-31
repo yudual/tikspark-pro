@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import random
 import re
+import shutil
 import time
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from playwright.sync_api import Locator, Page, sync_playwright
-
-import os
-import shutil
 
 from ..models import Account, Friend
 from .secret_service import get_secret_service
@@ -100,6 +100,7 @@ PLAYWRIGHT_STEALTH_SCRIPT = """
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined,
         });
+        delete navigator.__proto__.webdriver;
 
         // 2. 伪装 platform 为 Win32，与 User-Agent 保持一致（防止 Linux 暴露）
         Object.defineProperty(navigator, 'platform', {
@@ -155,7 +156,9 @@ PLAYWRIGHT_STEALTH_SCRIPT = """
                 PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
                 PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
                 RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
-            }
+            },
+            loadTimes: () => ({}),
+            csi: () => ({})
         };
 
         // 6. 伪装语言与插件
@@ -164,6 +167,10 @@ PLAYWRIGHT_STEALTH_SCRIPT = """
         });
         Object.defineProperty(navigator, 'plugins', {
             get: () => [1, 2, 3, 4, 5],
+        });
+
+        Object.defineProperty(navigator, 'maxTouchPoints', {
+            get: () => 1,
         });
 
         const originalQuery = window.navigator.permissions.query;
@@ -318,9 +325,13 @@ class ExecutionService:
                 # 2. 寻找好友（左侧列表匹配 -> 滚动加载 -> 搜索框检索 -> 主页发私信直连兜底）
                 target_name = friend.friend_nickname
                 target_dy_id = friend.friend_dy_id
+                target_sec_uid = getattr(friend, "sec_uid", "") or ""
+                if not target_sec_uid and target_dy_id and (target_dy_id.startswith("MS4w") or len(target_dy_id) >= 20):
+                    target_sec_uid = target_dy_id
+
                 active_page = page
 
-                friend_item = self._find_friend(page, target_name, target_dy_id)
+                friend_item = self._find_friend(page, target_name, target_dy_id, target_sec_uid)
                 if friend_item is not None:
                     try:
                         friend_item.click(timeout=4000)
@@ -329,7 +340,7 @@ class ExecutionService:
                     time.sleep(random.uniform(1.5, 2.5))
                 else:
                     # 左侧列表中未定位到（常见于几天未聊天的 App 好友），尝试通过用户个人主页或搜索直连唤起私信会话
-                    opened_page = self._open_user_profile_and_chat(page, context, target_name, target_dy_id)
+                    opened_page = self._open_user_profile_and_chat(page, context, target_name, target_dy_id, target_sec_uid)
                     if not opened_page:
                         waf_issue = self._check_waf_or_captcha(page)
                         for p in context.pages:
@@ -446,9 +457,146 @@ class ExecutionService:
                 browser.close()
 
 
-    def _check_waf_or_captcha(self, page: Page) -> str | None:
-        """检查页面是否被 WAF 拦截、滑块验证码或页面空白。"""
+    def _is_captcha_page(self, page: Page) -> bool:
+        """精准检测页面是否包含滑块验证码或验证码中间页。"""
         try:
+            title = (page.title() or "").strip()
+            if any(k in title for k in ("验证码", "中间页", "安全验证", "captcha", "verify", "风控")):
+                return True
+            for frame in page.frames:
+                if any(k in frame.url for k in ("verifycenter/captcha", "rmc.bytedance.com", "byteimg.com", "captcha", "verify")):
+                    return True
+            content = page.content()
+            if "验证码中间页" in content or "secsdk" in content or "verifycenter" in content:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _try_solve_slider_captcha(self, page: Page) -> bool:
+        """尝试自动识别并拖拽突破滑块验证码。"""
+        solver_js = """
+        () => {
+            const bgImg = document.getElementById('captcha_verify_image');
+            const slideImg = document.getElementById('captcha-verify_img_slide');
+            const btn = document.querySelector('.captcha_verify_slide--button, .dragger-item, [class*="drag"], [class*="slide--button"]');
+            if (!bgImg || !slideImg || !btn) return null;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = bgImg.naturalWidth || 552;
+            canvas.height = bgImg.naturalHeight || 344;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(bgImg, 0, 0);
+
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imgData.data;
+
+            const slideWidth = slideImg.naturalWidth || 110;
+            const slideHeight = slideImg.naturalHeight || 110;
+            const slideTop = parseInt(slideImg.style.top || '0') * (canvas.height / bgImg.height) || 100;
+
+            let bestScore = -1e9;
+            let bestX = 0;
+            const minX = Math.floor(canvas.width * 0.18);
+            const maxX = Math.floor(canvas.width * 0.88);
+
+            for (let x = minX; x < maxX; x++) {
+                let edgeScore = 0;
+                let shadowScore = 0;
+                for (let y = Math.max(0, slideTop - 20); y < Math.min(canvas.height, slideTop + slideHeight + 20); y += 2) {
+                    const idx = (Math.floor(y) * canvas.width + x) * 4;
+                    if (idx >= data.length - 4) continue;
+                    const gray = 0.299 * data[idx] + 0.587 * data[idx+1] + 0.114 * data[idx+2];
+                    if (x > 2 && x < canvas.width - 2) {
+                        const lIdx = (Math.floor(y) * canvas.width + (x - 2)) * 4;
+                        const rIdx = (Math.floor(y) * canvas.width + (x + 2)) * 4;
+                        const lGray = 0.299 * data[lIdx] + 0.587 * data[lIdx+1] + 0.114 * data[lIdx+2];
+                        const rGray = 0.299 * data[rIdx] + 0.587 * data[rIdx+1] + 0.114 * data[rIdx+2];
+                        const diff = Math.abs(lGray - rGray);
+                        if (diff > 30) edgeScore += diff;
+                        if (gray < 85) shadowScore += (85 - gray);
+                    }
+                }
+                const total = (edgeScore * 1.5) + shadowScore;
+                if (total > bestScore) {
+                    bestScore = total;
+                    bestX = x;
+                }
+            }
+
+            const scale = bgImg.width / canvas.width;
+            const initialSlideLeft = (parseInt(slideImg.style.left || '0') || 0) * scale;
+            const targetDisplayX = bestX * scale;
+            const dragDistance = targetDisplayX - initialSlideLeft;
+
+            return {
+                dragDistance: Math.max(20, dragDistance),
+                bgWidth: bgImg.width,
+                naturalWidth: canvas.width
+            };
+        }
+        """
+        for attempt in range(3):
+            try:
+                captcha_frame = None
+                for frame in page.frames:
+                    if any(k in frame.url for k in ("verifycenter/captcha", "rmc.bytedance.com", "byteimg.com", "captcha", "verify")):
+                        captcha_frame = frame
+                        break
+                if not captcha_frame:
+                    if not self._is_captcha_page(page):
+                        return True
+                    break
+
+                calc = captcha_frame.evaluate(solver_js)
+                if not calc or not calc.get("dragDistance"):
+                    time.sleep(1)
+                    continue
+
+                btn_loc = captcha_frame.locator('.captcha_verify_slide--button, .dragger-item, [class*="dragger"]').first
+                box = btn_loc.bounding_box()
+                if not box:
+                    break
+
+                start_x = box["x"] + 15
+                start_y = box["y"] + box["height"] / 2
+                distance = calc["dragDistance"]
+
+                page.mouse.move(start_x, start_y)
+                page.mouse.down()
+                time.sleep(0.08)
+
+                steps = random.randint(28, 38)
+                for i in range(1, steps + 1):
+                    t = i / steps
+                    progress = t * t * (3.0 - 2.0 * t)
+                    if t > 0.85:
+                        progress = progress + 0.01 * math.sin(t * math.pi)
+                    cur_x = start_x + distance * progress
+                    cur_y = start_y + math.sin(t * math.pi * 3) * random.uniform(0.5, 1.8)
+                    page.mouse.move(cur_x, cur_y)
+                    time.sleep(random.uniform(0.008, 0.022))
+
+                time.sleep(0.12)
+                page.mouse.up()
+                time.sleep(3.5)
+
+                if not self._is_captcha_page(page):
+                    return True
+            except Exception:
+                pass
+        return not self._is_captcha_page(page)
+
+    def _check_waf_or_captcha(self, page: Page) -> str | None:
+        """检查页面是否被 WAF 拦截、滑块验证码或页面空白，并尝试自动突破滑块。"""
+        try:
+            # 1. 尝试自动识别并解决滑块验证码
+            if self._is_captcha_page(page):
+                solved = self._try_solve_slider_captcha(page)
+                if solved:
+                    return None
+                return "检测到抖音安全验证码/滑块风控拦截，请人工在浏览器中完成验证或配置代理 IP。"
+
             content = page.content()
             if len(content) < 500:
                 return "检测到页面内容异常过短或空白，可能被抖音 WAF 安全风控拦截或网络慢。"
@@ -471,13 +619,16 @@ class ExecutionService:
             pass
         return None
 
-    def _open_user_profile_and_chat(self, page: Page, context: Any, target_name: str, dy_id: str) -> Page | None:
-        """多级兜底：如果最近会话列表中找不到好友，通过直连会话、个人主页或用户搜索唤起私信会话。
-
-        支持处理 target='_blank' 产生的弹出新标签页。
-        """
-        if not dy_id and not target_name:
+    def _open_user_profile_and_chat(
+        self, page: Page, context: Any, target_name: str, dy_id: str, sec_uid: str = ""
+    ) -> Page | None:
+        """多级精准定位：优先使用 sec_uid 直达个人主页或会话，其次搜索兜底。"""
+        if not dy_id and not target_name and not sec_uid:
             return None
+
+        effective_sec_uid = (sec_uid or "").strip()
+        if not effective_sec_uid and dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
+            effective_sec_uid = dy_id.strip()
 
         chat_btn_selectors = [
             'button:has-text("私信")',
@@ -507,22 +658,22 @@ class ExecutionService:
             return False
 
         try:
-            # 策略 A: 若 ID 是加密 sec_uid（以 MS4w 开头或超长串），优先直连 /chat 会话或个人主页
-            if dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
-                # 尝试直连会话
+            # 策略 A: 若有 sec_uid（100% 精准直达），优先直连 /chat 会话或个人主页
+            if effective_sec_uid:
+                # 尝试 1: 直连会话
                 try:
-                    direct_chat_url = f"https://www.douyin.com/chat?to_sec_uid={dy_id}"
+                    direct_chat_url = f"https://www.douyin.com/chat?to_sec_uid={effective_sec_uid}"
                     page.goto(direct_chat_url, timeout=35000, wait_until="domcontentloaded")
-                    time.sleep(random.uniform(2.0, 3.0))
+                    time.sleep(random.uniform(2.0, 3.5))
                     self._dismiss_dialogs(page)
                     if self._find_input_box(page):
                         return page
                 except Exception:
                     pass
 
-                # 尝试进入个人主页点击私信
+                # 尝试 2: 进入个人主页点击私信
                 try:
-                    user_url = f"https://www.douyin.com/user/{dy_id}"
+                    user_url = f"https://www.douyin.com/user/{effective_sec_uid}"
                     page.goto(user_url, timeout=35000, wait_until="domcontentloaded")
                     time.sleep(random.uniform(2.0, 3.5))
                     self._dismiss_dialogs(page)
@@ -534,7 +685,6 @@ class ExecutionService:
                     pass
 
             # 策略 B: 尝试通过抖音全站用户搜索定位好友
-            # 优先使用真实昵称搜索；若有自定义抖音号(非内部纯数字UID)也可作为备选
             search_candidates: list[str] = []
             if target_name:
                 search_candidates.append(target_name)
@@ -567,7 +717,6 @@ class ExecutionService:
                             candidate.click(timeout=3000)
                             time.sleep(2.5)
 
-                            # 检查是否产生了新 Tab
                             active_tab = context.pages[-1] if len(context.pages) > page_count_before else page
                             self._dismiss_dialogs(active_tab)
                             _try_click_chat_button(active_tab)
@@ -723,7 +872,7 @@ class ExecutionService:
         except Exception:
             pass
 
-    def _find_friend(self, page: Page, name: str, dy_id: str) -> Locator | None:
+    def _find_friend(self, page: Page, name: str, dy_id: str, sec_uid: str = "") -> Locator | None:
         """多策略定位好友：
         1. 当前可视区域查找
         2. 滚动好友列表查找
@@ -731,6 +880,15 @@ class ExecutionService:
         4. 搜索框检索 ID 查找（非加密长串才搜）
         5. 刷新重试
         """
+        # 等待会话列表加载完毕，避免骨架屏未渲染完成就判定未找到
+        try:
+            page.wait_for_selector(
+                "[class*='conversation'], [class*='user-item'], [class*='chat-item'], [class*='session'], .semi-table-row",
+                timeout=4000
+            )
+        except Exception:
+            pass
+
         deadline = time.time() + FRIEND_FIND_DEADLINE_SECONDS
         searched = False
         scrolled_rounds = 0

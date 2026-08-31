@@ -55,6 +55,7 @@ class ParsedCredential:
 class UserCandidate:
     uid: str
     display_id: str
+    sec_uid: str
     nickname: str
     avatar_url: str
     remark: str
@@ -301,8 +302,14 @@ class CredentialService:
             .filter(Friend.account_id == account.id, Friend.friend_dy_id == payload.friend_dy_id.strip())
             .first()
         )
+        sec_uid = (payload.sec_uid or "").strip()
+        if not sec_uid and payload.friend_dy_id.strip().startswith("MS4w"):
+            sec_uid = payload.friend_dy_id.strip()
+
         if existing:
             existing.friend_nickname = payload.friend_nickname.strip()
+            if sec_uid:
+                existing.sec_uid = sec_uid
             if payload.friend_avatar:
                 existing.friend_avatar = payload.friend_avatar.strip()
             existing.is_active = payload.is_active
@@ -338,6 +345,7 @@ class CredentialService:
         friend = Friend(
             account_id=account.id,
             friend_dy_id=payload.friend_dy_id.strip(),
+            sec_uid=sec_uid,
             friend_nickname=payload.friend_nickname.strip(),
             friend_avatar=(payload.friend_avatar or "").strip(),
             is_active=payload.is_active,
@@ -395,6 +403,7 @@ class CredentialService:
                 nickname = raw
                 dy_id = raw
 
+            sec_uid = dy_id if dy_id.startswith("MS4w") else ""
             existing = (
                 db.query(Friend)
                 .filter(Friend.account_id == account.id, Friend.friend_dy_id == dy_id)
@@ -402,6 +411,8 @@ class CredentialService:
             )
             if existing:
                 existing.friend_nickname = nickname
+                if sec_uid:
+                    existing.sec_uid = sec_uid
                 existing.is_active = payload.is_active
                 existing.schedule_window = schedule_window
                 existing.frequency_days = payload.frequency_days
@@ -429,6 +440,7 @@ class CredentialService:
                 friend = Friend(
                     account_id=account.id,
                     friend_dy_id=dy_id,
+                    sec_uid=sec_uid,
                     friend_nickname=nickname,
                     friend_avatar="",
                     is_active=payload.is_active,
@@ -467,6 +479,10 @@ class CredentialService:
             friend.friend_nickname = payload.friend_nickname.strip()
         if payload.friend_dy_id is not None:
             friend.friend_dy_id = payload.friend_dy_id.strip()
+            if friend.friend_dy_id.startswith("MS4w"):
+                friend.sec_uid = friend.friend_dy_id
+        if payload.sec_uid is not None:
+            friend.sec_uid = payload.sec_uid.strip()
         if payload.friend_avatar is not None:
             friend.friend_avatar = payload.friend_avatar.strip()
         if payload.is_active is not None:
@@ -636,6 +652,7 @@ class CredentialService:
                 candidates[self_uid] = UserCandidate(
                     uid=self_uid,
                     display_id=self_dy_id,
+                    sec_uid=self_sec_uid,
                     nickname=self_acc.get("nickname") or "抖音账号",
                     avatar_url=self_acc.get("avatar_url") or "",
                     remark="",
@@ -677,6 +694,7 @@ class CredentialService:
                     candidates[uid or sec_uid or disp_id] = UserCandidate(
                         uid=uid or sec_uid or disp_id,
                         display_id=disp_id,
+                        sec_uid=sec_uid,
                         nickname=nick,
                         avatar_url=avatar,
                         remark=str(u.get("remark_name") or "").strip(),
@@ -776,6 +794,7 @@ class CredentialService:
                 existing = Friend(
                     account_id=account.id,
                     friend_dy_id=item.display_id,
+                    sec_uid=item.sec_uid or (item.display_id if item.display_id.startswith("MS4w") else ""),
                     friend_nickname=item.nickname or item.display_id,
                     friend_avatar=item.avatar_url,
                     schedule_window=default_window,
@@ -796,6 +815,10 @@ class CredentialService:
                     existing_by_nickname[norm_name] = existing
             else:
                 existing.friend_dy_id = item.display_id
+                if item.sec_uid:
+                    existing.sec_uid = item.sec_uid
+                elif item.display_id.startswith("MS4w"):
+                    existing.sec_uid = item.display_id
                 if item.nickname:
                     existing.friend_nickname = item.nickname
                 if item.avatar_url:
