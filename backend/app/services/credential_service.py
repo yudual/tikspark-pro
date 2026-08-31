@@ -601,6 +601,13 @@ class CredentialService:
                 page.wait_for_timeout(3000)
                 self._dismiss_non_login_dialogs(page)
 
+                from .execution_service import ExecutionService
+                exec_svc = ExecutionService()
+                if exec_svc._is_captcha_page(page):
+                    exec_svc._try_solve_slider_captcha(page)
+                    page.wait_for_timeout(3000)
+                    self._dismiss_non_login_dialogs(page)
+
                 extracted_data = page.evaluate(
                     """async () => {
                     // 1. 获取专属 IM 互关关系链 (仅互关好友与火花好友)
@@ -718,6 +725,9 @@ class CredentialService:
                 browser.close()
 
         is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else False
+        if is_login_failed:
+            refreshed_cookies = None
+
         account_candidate = self._pick_account_candidate(candidates, parsed)
         friends = self._pick_friend_candidates(candidates, account_candidate, parsed)
 
