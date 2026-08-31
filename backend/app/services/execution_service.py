@@ -1081,17 +1081,19 @@ class ExecutionService:
 
         time.sleep(random.uniform(0.4, 0.8))
 
-        # 2. 回车发送
+        # 2. 回车发送 (支持标准 Enter 与 Ctrl+Enter)
         page.keyboard.press("Enter")
-        time.sleep(0.6)
+        time.sleep(0.4)
+        page.keyboard.press("ControlOrMeta+Enter")
+        time.sleep(0.4)
 
         # 3. 发送按钮触发
         for selector in SEND_BUTTON_SELECTORS:
             try:
-                btn = page.locator(selector).first
-                if btn.count() and btn.is_visible():
-                    btn.click(timeout=1500)
-                    break
+                for btn in page.locator(selector).all():
+                    if btn.is_visible():
+                        btn.click(timeout=1500)
+                        break
             except Exception:
                 continue
 
