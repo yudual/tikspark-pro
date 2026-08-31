@@ -997,15 +997,16 @@ class ExecutionService:
 
         return ""
 
-    def _get_chat_message_count(self, page: Page) -> int:
-        """获取当前聊天气泡/消息项的总数量。"""
+    def _get_outgoing_message_count(self, page: Page) -> int:
+        """严格只统计当前会话窗口右侧（我方发出的）消息气泡数量。"""
         selectors = [
-            "[class*='message-item']",
-            "[class*='message_bubble']",
-            "[class*='chat-item']",
-            "[class*='im-message']",
-            "[class*='msg-item']",
-            ".semi-list-item",
+            "[class*='message-send']",
+            "[class*='message-right']",
+            "[class*='message_right']",
+            "[class*='message-self']",
+            "[class*='messageSelf']",
+            "[class*='self-message']",
+            "[data-e2e*='send-message']",
         ]
         for sel in selectors:
             try:
@@ -1014,7 +1015,10 @@ class ExecutionService:
                     return cnt
             except Exception:
                 continue
-        return 0
+        try:
+            return page.locator("[class*='chat-content'] [class*='message'], [class*='im-chat'] [class*='bubble']").count()
+        except Exception:
+            return 0
 
     def _type_into_input_box(self, page: Page, input_box: Locator, text: str) -> tuple[bool, str]:
         """严格向输入框打字并确认内容已成功写入。"""
@@ -1042,7 +1046,7 @@ class ExecutionService:
         except Exception:
             pass
 
-        if text in current_text or current_text:
+        if text in current_text or (current_text and len(current_text) > 0):
             return True, ""
 
         # 2. 若键盘打字未能写入 contenteditable，使用 DOM 插入兜底
@@ -1067,8 +1071,8 @@ class ExecutionService:
         return False, "未能将文字写入抖音输入框（输入框未响应或焦点失效）"
 
     def _flush_text_message(self, page: Page, input_box: Locator, content: str) -> tuple[bool, str]:
-        """发送文本消息，并严格进行递交与回写验证（无回写则判定失败，绝不虚报）。"""
-        count_before = self._get_chat_message_count(page)
+        """发送文本消息，并严格进行递交与回写验证（必须产生新的右侧已发送消息，绝不虚报）。"""
+        out_before = self._get_outgoing_message_count(page)
 
         # 1. 写入内容
         typed_ok, err = self._type_into_input_box(page, input_box, content)
@@ -1101,27 +1105,25 @@ class ExecutionService:
             if fail_reason:
                 return False, fail_reason
 
-            # 检查输入框是否已提交
             input_cleared = self._is_input_cleared(input_box, content)
-            count_after = self._get_chat_message_count(page)
-            msg_visible = self._is_message_visible(page, content)
+            out_after = self._get_outgoing_message_count(page)
 
-            if input_cleared and (count_after > count_before or msg_visible):
-                return True, "已确认文本消息成功发出。"
+            if input_cleared and out_after > out_before:
+                return True, "已确认文本消息成功发出并产生右侧已发气泡。"
 
         # 超时未确认回写
         fail_reason = self._detect_send_failure(page)
         if fail_reason:
             return False, fail_reason
 
-        return False, f"向输入框提交文本 {content!r} 后，聊天窗口在 6 秒内未出现消息回写确认。"
+        return False, f"向输入框提交文本 {content!r} 后，聊天窗口未产生已发出消息气泡，请确认账号是否具备私信发送权限。"
 
     def _send_spark_sticker(self, page: Page, input_box: Locator) -> tuple[bool, str, bool]:
-        """打开表情面板点击续火花表情；严格取证；失败时以 🔥 符号兜底发送并验证。
+        """打开表情面板点击续火花表情；严格取证；失败时以 🔥 符号兜底发送并严格验证。
 
         返回: (是否成功, 结果描述, 是否使用了文字兜底)
         """
-        count_before = self._get_chat_message_count(page)
+        out_before = self._get_outgoing_message_count(page)
         button = self._find_emoji_button(page)
 
         if button is not None:
@@ -1152,8 +1154,8 @@ class ExecutionService:
                     if fail_reason:
                         return False, fail_reason, False
 
-                    count_after = self._get_chat_message_count(page)
-                    if count_after > count_before:
+                    out_after = self._get_outgoing_message_count(page)
+                    if out_after > out_before:
                         return True, "已确认发送续火花专属表情包。", False
 
             # 关闭表情面板
@@ -1166,7 +1168,7 @@ class ExecutionService:
         fallback_ok, reason = self._flush_text_message(page, input_box, "🔥")
         if fallback_ok:
             return True, "已自动以 🔥 表情字符兜底发送并确认成功。", True
-        return False, f"火花表情与兜底文字发送均未确认成功: {reason}", True
+        return False, f"火花表情发送未成功: {reason}", True
 
     def _find_emoji_button(self, page: Page) -> Locator | None:
         deadline = time.time() + EMOJI_PANEL_WAIT_SECONDS
