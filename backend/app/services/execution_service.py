@@ -96,10 +96,52 @@ SPARK_STICKER_TOKEN = "[火花]"
 PLAYWRIGHT_STEALTH_SCRIPT = """
 (() => {
     try {
+        // 1. 隐藏 webdriver
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined,
         });
 
+        // 2. 伪装 platform 为 Win32，与 User-Agent 保持一致（防止 Linux 暴露）
+        Object.defineProperty(navigator, 'platform', {
+            get: () => 'Win32',
+        });
+
+        // 3. 伪装硬件特征
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+            get: () => 8,
+        });
+        Object.defineProperty(navigator, 'deviceMemory', {
+            get: () => 8,
+        });
+        Object.defineProperty(navigator, 'vendor', {
+            get: () => 'Google Inc.',
+        });
+
+        // 4. 伪装 WebGL 渲染器（防止暴露 Google SwiftShader / Mesa）
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) {
+                return 'Google Inc. (NVIDIA)';
+            }
+            if (parameter === 37446) {
+                return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            }
+            return getParameter.apply(this, arguments);
+        };
+        if (typeof WebGL2RenderingContext !== 'undefined') {
+            const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) {
+                    return 'Google Inc. (NVIDIA)';
+                }
+                if (parameter === 37446) {
+                    return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                }
+                return getParameter2.apply(this, arguments);
+            };
+        }
+
+        // 5. 伪装 window.chrome
         window.chrome = {
             app: {
                 isInstalled: false,
@@ -116,10 +158,10 @@ PLAYWRIGHT_STEALTH_SCRIPT = """
             }
         };
 
+        // 6. 伪装语言与插件
         Object.defineProperty(navigator, 'languages', {
             get: () => ['zh-CN', 'zh', 'en'],
         });
-
         Object.defineProperty(navigator, 'plugins', {
             get: () => [1, 2, 3, 4, 5],
         });

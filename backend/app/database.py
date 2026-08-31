@@ -38,7 +38,28 @@ class Base(DeclarativeBase):
     pass
 
 
+
+def _recover_stale_dispatch_tasks() -> None:
+    inspector = inspect(engine)
+    if "dispatch_tasks" not in inspector.get_table_names():
+        return
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE dispatch_tasks "
+                "SET status = 'failed', "
+                "    summary = '服务重启中断', "
+                "    details = '系统启动时检测到未完成的任务，已自动标记为中断终止。', "
+                "    finished_at = CURRENT_TIMESTAMP, "
+                "    updated_at = CURRENT_TIMESTAMP "
+                "WHERE status = 'running'"
+            )
+        )
+        if "dispatch_locks" in inspector.get_table_names():
+            connection.execute(text("DELETE FROM dispatch_locks"))
+
 def ensure_sqlite_schema() -> None:
+    _recover_stale_dispatch_tasks()
     inspector = inspect(engine)
     table_names = inspector.get_table_names()
     _ensure_dispatch_tables(table_names)

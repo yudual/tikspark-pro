@@ -9,7 +9,7 @@ services:
     environment:
       - TIKSPARK_SQLITE_PATH=/app/backend/data/tikspark.db
       - TIKSPARK_SECRET_KEY_PATH=/app/backend/data/secret.key
-      - TIKSPARK_SCHEDULER_ENABLED=false
+      - TIKSPARK_SCHEDULER_ENABLED=true
       - TIKSPARK_SCHEDULER_SCAN_INTERVAL_SECONDS=180
       - TIKSPARK_DISPATCH_JITTER_MIN_SECONDS=15
       - TIKSPARK_DISPATCH_JITTER_MAX_SECONDS=45
