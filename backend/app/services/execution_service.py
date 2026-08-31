@@ -338,11 +338,12 @@ class ExecutionService:
                         # 先发送已打好的文字，保持消息顺序
                         if pending_text:
                             text_content = "".join(pending_text)
-                            if not self._flush_text_message(active_page, input_box, text_content):
+                            flush_ok, flush_err = self._flush_text_message(active_page, input_box, text_content)
+                            if not flush_ok:
                                 return ExecutionResult(
                                     False,
                                     "发送文本失败",
-                                    f"已向 {target_name} 输入文本 {text_content!r} 但未能确认发送结果。",
+                                    f"向 {target_name} 发送文本失败: {flush_err}",
                                     refreshed_cookies=_get_context_cookies(),
                                 )
                             pending_text = []
@@ -362,11 +363,12 @@ class ExecutionService:
 
                 if pending_text:
                     text_content = "".join(pending_text)
-                    if not self._flush_text_message(active_page, input_box, text_content):
+                    flush_ok, flush_err = self._flush_text_message(active_page, input_box, text_content)
+                    if not flush_ok:
                         return ExecutionResult(
                             False,
                             "发送文本失败",
-                            f"已向 {target_name} 输入文本 {text_content!r} 但未能确认发送结果。",
+                            f"向 {target_name} 发送文本失败: {flush_err}",
                             refreshed_cookies=_get_context_cookies(),
                         )
 
@@ -751,14 +753,130 @@ class ExecutionService:
             time.sleep(0.6)
         return None
 
-    def _flush_text_message(self, page: Page, input_box: Locator, content: str) -> bool:
-        """发送已输入到输入框的文本（回车 + 点击发送按钮 + 智能取证）。"""
+    def _detect_send_failure(self, page: Page) -> str:
+        """检查是否有红感叹号、发送失败提示或风控拦截弹窗。"""
+        # 1. 检查失败图标
+        try:
+            fail_icons = page.locator(
+                "svg[class*='fail'], svg[class*='Fail'], svg[class*='error'], svg[class*='Error'], "
+                ".fail-icon, .error-icon, .semi-icon-alert-circle, [class*='status-fail'], [data-e2e*='fail']"
+            )
+            if fail_icons.count() > 0:
+                for idx in range(min(fail_icons.count(), 3)):
+                    if fail_icons.nth(idx).is_visible():
+                        return "页面出现发送失败图标（红感叹号/错误状态）"
+        except Exception:
+            pass
+
+        # 2. 检查常见拦截/失败文本提示
+        fail_markers = [
+            "发送失败",
+            "未成功发送",
+            "由于对方的隐私设置",
+            "你已被对方拉黑",
+            "请先关注对方",
+            "请先添加对方为好友",
+            "发送频繁",
+            "发送受限",
+            "账号异常",
+            "请进行安全验证",
+            "操作过于频繁",
+        ]
+        try:
+            for marker in fail_markers:
+                loc = page.get_by_text(marker, exact=False).first
+                if loc.count() and loc.is_visible():
+                    return f"系统提示：{marker}"
+        except Exception:
+            pass
+
+        return ""
+
+    def _get_chat_message_count(self, page: Page) -> int:
+        """获取当前聊天气泡/消息项的总数量。"""
+        selectors = [
+            "[class*='message-item']",
+            "[class*='message_bubble']",
+            "[class*='chat-item']",
+            "[class*='im-message']",
+            "[class*='msg-item']",
+            ".semi-list-item",
+        ]
+        for sel in selectors:
+            try:
+                cnt = page.locator(sel).count()
+                if cnt > 0:
+                    return cnt
+            except Exception:
+                continue
+        return 0
+
+    def _type_into_input_box(self, page: Page, input_box: Locator, text: str) -> tuple[bool, str]:
+        """严格向输入框打字并确认内容已成功写入。"""
+        if not text:
+            return True, ""
+
+        try:
+            input_box.click(timeout=2000)
+        except Exception:
+            pass
+
+        # 1. 键盘拟人输入
+        try:
+            input_box.focus()
+            for char in text:
+                page.keyboard.type(char, delay=random.randint(30, 90))
+        except Exception:
+            pass
+
+        # 检查是否成功写入
+        time.sleep(0.4)
+        current_text = ""
+        try:
+            current_text = page.evaluate("(el) => (el.innerText || el.textContent || el.value || '').trim()", input_box.element_handle())
+        except Exception:
+            pass
+
+        if text in current_text or current_text:
+            return True, ""
+
+        # 2. 若键盘打字未能写入 contenteditable，使用 DOM 插入兜底
+        try:
+            page.evaluate(
+                """([el, val]) => {
+                el.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('insertText', false, val);
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }""",
+                [input_box.element_handle(), text],
+            )
+            time.sleep(0.4)
+            current_text = page.evaluate("(el) => (el.innerText || el.textContent || el.value || '').trim()", input_box.element_handle())
+            if current_text:
+                return True, ""
+        except Exception as exc:
+            return False, f"输入框写入异常: {exc}"
+
+        return False, "未能将文字写入抖音输入框（输入框未响应或焦点失效）"
+
+    def _flush_text_message(self, page: Page, input_box: Locator, content: str) -> tuple[bool, str]:
+        """发送文本消息，并严格进行递交与回写验证（无回写则判定失败，绝不虚报）。"""
+        count_before = self._get_chat_message_count(page)
+
+        # 1. 写入内容
+        typed_ok, err = self._type_into_input_box(page, input_box, content)
+        if not typed_ok:
+            return False, err
+
         time.sleep(random.uniform(0.4, 0.8))
-        # 1. 回车触发
+
+        # 2. 回车发送
         page.keyboard.press("Enter")
         time.sleep(0.6)
 
-        # 2. 发送按钮兜底触发
+        # 3. 发送按钮触发
         for selector in SEND_BUTTON_SELECTORS:
             try:
                 btn = page.locator(selector).first
@@ -768,78 +886,82 @@ class ExecutionService:
             except Exception:
                 continue
 
-        time.sleep(1.2)
-        verified, _ = self._verify_message_sent(page, input_box, content)
-        return verified
+        # 4. 等待并取证
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            time.sleep(0.8)
+
+            # 检查是否有错误拦截
+            fail_reason = self._detect_send_failure(page)
+            if fail_reason:
+                return False, fail_reason
+
+            # 检查输入框是否已提交
+            input_cleared = self._is_input_cleared(input_box, content)
+            count_after = self._get_chat_message_count(page)
+            msg_visible = self._is_message_visible(page, content)
+
+            if input_cleared and (count_after > count_before or msg_visible):
+                return True, "已确认文本消息成功发出。"
+
+        # 超时未确认回写
+        fail_reason = self._detect_send_failure(page)
+        if fail_reason:
+            return False, fail_reason
+
+        return False, f"向输入框提交文本 {content!r} 后，聊天窗口在 6 秒内未出现消息回写确认。"
 
     def _send_spark_sticker(self, page: Page, input_box: Locator) -> tuple[bool, str, bool]:
-        """打开输入框旁的表情面板，点击续火花表情；如果表情面板未找到，自动降级为文字表情兜底发送。
+        """打开表情面板点击续火花表情；严格取证；失败时以 🔥 符号兜底发送并验证。
 
-        返回 (成功与否, 结果说明, 是否使用了文字兜底)
+        返回: (是否成功, 结果描述, 是否使用了文字兜底)
         """
+        count_before = self._get_chat_message_count(page)
         button = self._find_emoji_button(page)
-        if button is None:
-            # 按钮未定位到，降级文字兜底
-            return self._fallback_spark_text(page, input_box, "未定位到表情按钮")
 
-        try:
-            button.click(timeout=2500)
-        except Exception:
+        if button is not None:
             try:
-                page.evaluate("(el) => el.click()", button.element_handle())
+                button.click(timeout=2500)
             except Exception:
-                return self._fallback_spark_text(page, input_box, "点击表情按钮失败")
+                try:
+                    page.evaluate("(el) => el.click()", button.element_handle())
+                except Exception:
+                    pass
 
-        time.sleep(0.8)
-        item = self._find_spark_item(page)
-        if item is None:
-            # 表情面板里没有火花（如火花断掉或改版），降级文字兜底
-            # 尝试关闭表情面板
+            time.sleep(0.8)
+            item = self._find_spark_item(page)
+            if item is not None:
+                try:
+                    item.click(timeout=3000)
+                except Exception:
+                    try:
+                        page.evaluate("(el) => el.click()", item.element_handle())
+                    except Exception:
+                        pass
+
+                # 等待表情发送回写确认
+                deadline = time.time() + 6
+                while time.time() < deadline:
+                    time.sleep(0.8)
+                    fail_reason = self._detect_send_failure(page)
+                    if fail_reason:
+                        return False, fail_reason, False
+
+                    count_after = self._get_chat_message_count(page)
+                    if count_after > count_before:
+                        return True, "已确认发送续火花专属表情包。", False
+
+            # 关闭表情面板
             try:
                 page.keyboard.press("Escape")
             except Exception:
                 pass
-            return self._fallback_spark_text(page, input_box, "表情面板未找到火花表情")
 
-        baseline = self._count_message_emojis(page)
-        try:
-            item.click(timeout=3000)
-        except Exception:
-            try:
-                page.evaluate("(el) => el.click()", item.element_handle())
-            except Exception:
-                return self._fallback_spark_text(page, input_box, "点击火花表情失败")
-
-        deadline = time.time() + 8
-        while time.time() < deadline:
-            if self._count_message_emojis(page) > baseline:
-                return True, "已确认发送续火花专属表情包。", False
-            time.sleep(0.6)
-
-        # 超时未确认表情包增量，为保证续火花成功，走文字表情补充兜底
-        return self._fallback_spark_text(page, input_box, "火花表情发送确认超时")
-
-    def _fallback_spark_text(self, page: Page, input_box: Locator, original_reason: str) -> tuple[bool, str, bool]:
-        """表情包发送受阻时的安全保底方案：向输入框发送 🔥 符号及续火花文本。"""
-        fallback_msg = "🔥"
-        try:
-            input_box.click(timeout=1500)
-            input_box.focus()
-            for char in fallback_msg:
-                page.keyboard.type(char, delay=random.randint(30, 80))
-            page.keyboard.press("Enter")
-            time.sleep(1.0)
-            for selector in SEND_BUTTON_SELECTORS:
-                try:
-                    btn = page.locator(selector).first
-                    if btn.count() and btn.is_visible():
-                        btn.click(timeout=1000)
-                        break
-                except Exception:
-                    continue
-            return True, f"{original_reason}，已自动以 🔥 表情字符兜底发送成功。", True
-        except Exception as exc:
-            return False, f"{original_reason}，且文字兜底发送失败: {exc}", True
+        # 表情包未发送成功，严格使用 🔥 文字表情兜底发送
+        fallback_ok, reason = self._flush_text_message(page, input_box, "🔥")
+        if fallback_ok:
+            return True, "已自动以 🔥 表情字符兜底发送并确认成功。", True
+        return False, f"火花表情与兜底文字发送均未确认成功: {reason}", True
 
     def _find_emoji_button(self, page: Page) -> Locator | None:
         deadline = time.time() + EMOJI_PANEL_WAIT_SECONDS
@@ -880,38 +1002,6 @@ class ExecutionService:
             time.sleep(0.4)
         return None
 
-    def _count_message_emojis(self, page: Page) -> int:
-        """统计聊天区已发表情（.MessageItemEmojiimage 等），用于确认表情是否发出。"""
-        total = 0
-        try:
-            total += page.locator(".MessageItemEmojiimage, [class*='message-emoji'], [class*='emoji-sticker']").count()
-        except Exception:
-            pass
-        return total
-
-    def _verify_message_sent(self, page: Page, input_box: Locator, content: str) -> tuple[bool, str]:
-        normalized_content = content.strip()
-        if not normalized_content:
-            return True, "内容为空"
-
-        deadline = time.time() + 6
-        latest_reason = "等待页面回写发送结果。"
-
-        while time.time() < deadline:
-            input_cleared = self._is_input_cleared(input_box, normalized_content)
-            message_visible = self._is_message_visible(page, normalized_content)
-
-            if input_cleared or message_visible:
-                return True, "已确认消息发送成功。"
-
-            time.sleep(0.6)
-
-        # 宽容判定：若输入框已清空且未报错，通常已完成发送
-        if self._is_input_cleared(input_box, normalized_content):
-            return True, "输入框已清空，判定发送完成。"
-
-        return False, latest_reason
-
     def _is_input_cleared(self, input_box: Locator, content: str) -> bool:
         try:
             if input_box.count() == 0:
@@ -919,30 +1009,13 @@ class ExecutionService:
         except Exception:
             return True
 
-        candidates: list[str] = []
         try:
-            raw_text = input_box.text_content(timeout=800) or ""
-            candidates.append(raw_text.strip())
+            current_text = page_text = input_box.evaluate("(el) => (el.innerText || el.textContent || el.value || '').trim()")
+            if not current_text:
+                return True
+            return content.strip() not in current_text
         except Exception:
-            pass
-
-        try:
-            inner_text = input_box.inner_text(timeout=800) or ""
-            candidates.append(inner_text.strip())
-        except Exception:
-            pass
-
-        try:
-            input_value = input_box.input_value(timeout=800) or ""
-            candidates.append(input_value.strip())
-        except Exception:
-            pass
-
-        if not candidates:
             return True
-
-        normalized_content = content.strip()
-        return all(candidate == "" or candidate != normalized_content for candidate in candidates)
 
     def _is_message_visible(self, page: Page, content: str) -> bool:
         for selector in MESSAGE_CONTENT_SELECTORS:
