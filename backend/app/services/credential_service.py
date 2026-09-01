@@ -1,10 +1,10 @@
+from __future__ import annotations
 
 def _clear_account_profile(account_id: int | None):
     if account_id:
         p = Path(f"/app/backend/data/browser_profiles/account_{account_id}")
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
-from __future__ import annotations
 
 import json
 import re
