@@ -28,40 +28,39 @@ LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密
 DISMISS_BUTTON_TEXTS = ("取消", "暂不", "知道了", "关闭", "稍后再说", "继续逛逛", "暂不开启", "我知道了", "好的", "确定", "确认")
 DIALOG_SELECTORS = (".semi-modal-content", '[role="dialog"]', ".semi-toast", '[class*="modal"]', ".semi-modal-wrap")
 
+# 严禁匹配普通页面的搜索框或评论框，仅匹配私信与创作者中心的专用聊天编辑区
 INPUT_SELECTORS = (
+    '#sub-app div[contenteditable="true"]',
+    '[class*="chat-input"] div[contenteditable="true"]',
+    '[class*="im-chat"] div[contenteditable="true"]',
+    '[class*="editor-input"] div[contenteditable="true"]',
+    '[class*="message-editor"] div[contenteditable="true"]',
+    '[class*="msg-input"] div[contenteditable="true"]',
+    '[class*="chatInput"] div[contenteditable="true"]',
+    '[class*="chat-room"] div[contenteditable="true"]',
+    '[class*="chat"] div[contenteditable="true"]',
     'div[contenteditable="true"]',
-    '[role="textbox"]',
-    "textarea",
-    ".chat-input",
-    "[class*='chat-input']",
-    "[class*='editor-input']",
-    "[class*='message-editor']",
-    "[class*='chatInput']",
-    "[class*='msg-input']",
-    "#sub-app div[contenteditable='true']",
 )
 
 SEND_BUTTON_SELECTORS = (
+    '[class*="chat"] button:has-text("发送")',
+    '[class*="im-"] button:has-text("发送")',
+    '#sub-app button:has-text("发送")',
     'button:has-text("发送")',
     '[data-e2e*="send"]',
     '[class*="send-btn"]',
     '[class*="sendBtn"]',
     '[class*="send_btn"]',
-    '.semi-button-primary:has-text("发送")',
-    'button[type="submit"]',
 )
 
 EMOJI_BUTTON_SELECTORS = (
-    "svg.messageMsgInputiconAction",
+    '[class*="chat"] svg.messageMsgInputiconAction',
+    '#sub-app [class*="emoji"]',
+    '[class*="chat"] [class*="emoji"]',
     '[data-e2e*="emoji"]',
     '[aria-label*="表情"]',
     '[title*="表情"]',
     ".emoji-btn",
-    '[class*="emoji-btn"]',
-    '[class*="emojiButton"]',
-    '[class*="emoji-icon"]',
-    '[class*="emoji_btn"]',
-    '#sub-app [class*="emoji"]',
 )
 
 SPARK_ITEM_SELECTORS = (
@@ -448,13 +447,28 @@ class ExecutionService:
         return False
 
     def _find_input_box(self, page: Page) -> Locator | None:
+        """精准定位私信编辑区，彻底过滤所有网页搜索框、评论框与非聊天输入框。"""
         deadline = time.time() + 8
         while time.time() < deadline:
             for selector in INPUT_SELECTORS:
                 try:
-                    loc = page.locator(selector).first
-                    if loc.count() and loc.is_visible():
-                        return loc
+                    for loc in page.locator(selector).all():
+                        if not loc.is_visible():
+                            continue
+                        tag = loc.evaluate("el => el.tagName.toLowerCase()")
+                        if tag in ("input", "textarea"):
+                            # 过滤搜索框
+                            ph = (loc.get_attribute("placeholder") or "").strip()
+                            if "搜索" in ph or "作品" in ph or "查找" in ph:
+                                continue
+                        # 检查是否在 contenteditable 或者带有聊天特征的容器内
+                        is_editable = loc.evaluate("el => el.isContentEditable || el.getAttribute('contenteditable') === 'true'")
+                        if is_editable:
+                            # 确保不是顶栏搜索框
+                            box_rect = loc.bounding_box()
+                            if box_rect and box_rect["y"] < 80 and box_rect["width"] < 400:
+                                continue
+                            return loc
                 except Exception:
                     continue
             time.sleep(0.4)
@@ -580,6 +594,7 @@ class ExecutionService:
     def _flush_text_message(
         self, page: Page, input_box: Locator, content: str, send_receipt: dict[str, Any]
     ) -> tuple[bool, str]:
+        """严格发信校验：必须获得真实网络层 status_code == 0 或收到服务端确认，绝不允许通过空输入框虚报！"""
         send_receipt["seen"] = False
         send_receipt["ok"] = False
         send_receipt["error"] = ""
@@ -589,6 +604,14 @@ class ExecutionService:
             return False, err
 
         time.sleep(random.uniform(0.3, 0.5))
+        # 触发输入框 keydown Enter 与页面 Enter
+        try:
+            page.evaluate(
+                "(el) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }))",
+                input_box.element_handle(),
+            )
+        except Exception:
+            pass
         page.keyboard.press("Enter")
         time.sleep(0.4)
 
@@ -601,7 +624,8 @@ class ExecutionService:
             except Exception:
                 continue
 
-        deadline = time.time() + 5
+        # 严格等待网络回执：必须真实拿到抖音服务端的 200/status_code 0 回执
+        deadline = time.time() + 6
         while time.time() < deadline:
             time.sleep(0.5)
             fail_reason = self._detect_send_failure(page)
@@ -613,22 +637,12 @@ class ExecutionService:
                     return True, "已获得抖音服务端发信成功回执。"
                 return False, f"抖音接口返回发送失败: {send_receipt.get('error', '未知原因')}"
 
-            if self._is_input_cleared(input_box, content):
-                time.sleep(0.6)
-                if send_receipt.get("ok") or not self._detect_send_failure(page):
-                    return True, "消息已提交并清空输入框。"
-
-        if send_receipt.get("seen") and not send_receipt.get("ok"):
-            return False, f"抖音发信接口报错: {send_receipt.get('error')}"
-
+        # 若未抓取到确凿的网络回执，严禁判定为成功！
         fail_reason = self._detect_send_failure(page)
         if fail_reason:
             return False, fail_reason
 
-        if self._is_input_cleared(input_box, content):
-            return True, "消息已提交并清空输入框。"
-
-        return False, f"向输入框提交文本 {content!r} 后未能确认发出，请确认账号私信状态。"
+        return False, f"向目标输入框提交 {content!r} 后未收到抖音发信网络回执，未实际发出。"
 
     def _send_spark_sticker(
         self, page: Page, input_box: Locator, send_receipt: dict[str, Any]
@@ -657,7 +671,7 @@ class ExecutionService:
                     except Exception:
                         pass
 
-                deadline = time.time() + 4
+                deadline = time.time() + 5
                 while time.time() < deadline:
                     time.sleep(0.5)
                     fail_reason = self._detect_send_failure(page)
@@ -671,6 +685,7 @@ class ExecutionService:
             except Exception:
                 pass
 
+        # 表情未发出，严格以 🔥 字符兜底，且必须拿到服务端网络回执！
         fallback_ok, reason = self._flush_text_message(page, input_box, "🔥", send_receipt)
         if fallback_ok:
             return True, "已自动以 🔥 表情字符兜底发送并确认成功。", True
@@ -741,7 +756,6 @@ class ExecutionService:
             launch_kwargs["executable_path"] = exe_path
 
         with sync_playwright() as playwright:
-            # 使用持久化上下文 launch_persistent_context
             context = playwright.chromium.launch_persistent_context(
                 str(profile_dir),
                 **launch_kwargs,
