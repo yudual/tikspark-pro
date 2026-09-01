@@ -267,11 +267,16 @@ class ExecutionService:
         return dismissed_count
 
     def _check_login_required(self, page: Page) -> bool:
+        """检查页面是否处于未登录状态或弹出了登录遮罩。"""
         try:
             for marker in LOGIN_DIALOG_MARKERS:
                 marker_loc = page.get_by_text(marker, exact=True).first
                 if marker_loc.count() and marker_loc.is_visible():
                     return True
+            # 检查顶栏是否有登录按钮
+            login_btn = page.locator('button:has-text("登录"), div[role="button"]:has-text("登录"), [class*="login-btn"]').first
+            if login_btn.count() and login_btn.is_visible() and login_btn.inner_text().strip() == "登录":
+                return True
             unlogged_loc = page.locator('text="未登录"').first
             if unlogged_loc.count() and unlogged_loc.is_visible():
                 return True
@@ -425,7 +430,7 @@ class ExecutionService:
         if effective_sec_uid:
             try:
                 profile_url = f"https://www.douyin.com/user/{effective_sec_uid}"
-                page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
+                page.goto(profile_url, timeout=30000, wait_until="commit")
                 time.sleep(3.0)
                 self._dismiss_dialogs(page)
 
@@ -439,6 +444,8 @@ class ExecutionService:
                         dm_btn.click(timeout=3000)
                         time.sleep(2.5)
                         self._dismiss_dialogs(page)
+                        if self._check_login_required(page):
+                            return False
                         if self._find_input_box(page):
                             return True
             except Exception as e:
@@ -457,14 +464,11 @@ class ExecutionService:
                             continue
                         tag = loc.evaluate("el => el.tagName.toLowerCase()")
                         if tag in ("input", "textarea"):
-                            # 过滤搜索框
                             ph = (loc.get_attribute("placeholder") or "").strip()
                             if "搜索" in ph or "作品" in ph or "查找" in ph:
                                 continue
-                        # 检查是否在 contenteditable 或者带有聊天特征的容器内
                         is_editable = loc.evaluate("el => el.isContentEditable || el.getAttribute('contenteditable') === 'true'")
                         if is_editable:
-                            # 确保不是顶栏搜索框
                             box_rect = loc.bounding_box()
                             if box_rect and box_rect["y"] < 80 and box_rect["width"] < 400:
                                 continue
@@ -531,25 +535,6 @@ class ExecutionService:
             pass
         return ""
 
-    def _get_outgoing_message_count(self, page: Page) -> int:
-        selectors = [
-            "[class*='box-item-'][class*='is-me']",
-            "[class*='message-send']",
-            "[class*='message-right']",
-            "[class*='message_right']",
-            "[class*='message-self']",
-            "[class*='messageSelf']",
-            "[class*='self-message']",
-        ]
-        for sel in selectors:
-            try:
-                cnt = page.locator(sel).count()
-                if cnt > 0:
-                    return cnt
-            except Exception:
-                continue
-        return 0
-
     def _type_into_input_box(self, page: Page, input_box: Locator, text: str) -> tuple[bool, str]:
         if not text:
             return True, ""
@@ -604,7 +589,6 @@ class ExecutionService:
             return False, err
 
         time.sleep(random.uniform(0.3, 0.5))
-        # 触发输入框 keydown Enter 与页面 Enter
         try:
             page.evaluate(
                 "(el) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }))",
@@ -806,7 +790,7 @@ class ExecutionService:
                 # 策略 2: 访问创作者中心私信互动中心
                 if not opened:
                     try:
-                        page.goto(CREATOR_CHAT_URL, timeout=35000, wait_until="domcontentloaded")
+                        page.goto(CREATOR_CHAT_URL, timeout=35000, wait_until="commit")
                         time.sleep(2.0)
                         self._dismiss_dialogs(page)
 
@@ -829,7 +813,7 @@ class ExecutionService:
                         fallback_chat_url = CONSUMER_CHAT_URL
                         if target_sec_uid:
                             fallback_chat_url = f"{CONSUMER_CHAT_URL}?to_sec_uid={target_sec_uid}"
-                        page.goto(fallback_chat_url, timeout=35000, wait_until="domcontentloaded")
+                        page.goto(fallback_chat_url, timeout=35000, wait_until="commit")
                         time.sleep(3.0)
                         self._dismiss_dialogs(page)
 
