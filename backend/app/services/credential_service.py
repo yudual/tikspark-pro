@@ -218,10 +218,8 @@ class CredentialService:
         elif parsed.dy_id and not account.dy_id:
             account.dy_id = parsed.dy_id
 
-        if sync_result.status == AccountStatus.healthy and sync_result.refreshed_cookies and "sessionid" in sync_result.refreshed_cookies:
-            account.cookie_text = get_secret_service().encrypt(sync_result.refreshed_cookies)
-            account.cookie_updated_at = beijing_now()
-            account.cookie_expires_at = self.extract_cookie_expires_at(sync_result.refreshed_cookies)
+        # 后台同步绝不篡改用户原始 Cookie
+        pass
 
         account.status = sync_result.status
         account.status_reason = (
@@ -255,10 +253,8 @@ class CredentialService:
         account.status_reason = sync_result.status_reason
         account.last_checked_at = beijing_now()
 
-        if sync_result.status == AccountStatus.healthy and sync_result.refreshed_cookies and "sessionid" in sync_result.refreshed_cookies:
-            account.cookie_text = get_secret_service().encrypt(sync_result.refreshed_cookies)
-            account.cookie_updated_at = beijing_now()
-            account.cookie_expires_at = self.extract_cookie_expires_at(sync_result.refreshed_cookies)
+        # 后台同步绝不篡改用户原始 Cookie
+        pass
 
         if sync_result.account_candidate:
             account.nickname = sync_result.account_candidate.nickname or account.nickname

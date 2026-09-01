@@ -293,16 +293,10 @@ def _run_friend_task(
     result = execution_service.send_message(friend.account, friend, content)
     result_status = RunStatus.success if result.success else RunStatus.failed
 
-    refreshed_cookies = getattr(result, "refreshed_cookies", None)
-    if result.success and refreshed_cookies and "sessionid" in refreshed_cookies:
-        try:
-            friend.account.cookie_text = get_secret_service().encrypt(refreshed_cookies)
-            friend.account.cookie_updated_at = current_time
-            if friend.account.status != AccountStatus.healthy:
-                friend.account.status = AccountStatus.healthy
-                friend.account.status_reason = "会话活跃且已自动刷新凭证"
-        except Exception:
-            pass
+    # 彻底禁用后台自动修改 Cookie，确保用户填入的原始 Cookie 100% 绝对只读与不可篡改
+    if result.success and friend.account.status != AccountStatus.healthy:
+        friend.account.status = AccountStatus.healthy
+        friend.account.status_reason = "会话活跃且执行成功" 
 
     if result.summary in ("账号凭证已失效", "凭证失效"):
         friend.account.status = AccountStatus.invalid
