@@ -107,7 +107,7 @@ class CredentialService:
         parsed = self.parse_cookie_text(clean_cookie)
         account_candidate = sync_result.account_candidate
         friends = self._without_account_candidate(sync_result.friends, account_candidate)
-        final_cookie_text = sync_result.refreshed_cookies or clean_cookie
+        final_cookie_text = clean_cookie
         cookie_expires_at = self.extract_cookie_expires_at(final_cookie_text)
         now = beijing_now()
 
@@ -161,7 +161,7 @@ class CredentialService:
         elif parsed.dy_id and not account.dy_id:
             account.dy_id = parsed.dy_id
 
-        final_cookie_text = sync_result.refreshed_cookies or clean_cookie
+        final_cookie_text = clean_cookie
         now = beijing_now()
         account.cookie_text = get_secret_service().encrypt(final_cookie_text)
         account.cookie_expires_at = self.extract_cookie_expires_at(final_cookie_text)
@@ -218,7 +218,7 @@ class CredentialService:
         elif parsed.dy_id and not account.dy_id:
             account.dy_id = parsed.dy_id
 
-        if sync_result.refreshed_cookies:
+        if sync_result.status == AccountStatus.healthy and sync_result.refreshed_cookies and "sessionid" in sync_result.refreshed_cookies:
             account.cookie_text = get_secret_service().encrypt(sync_result.refreshed_cookies)
             account.cookie_updated_at = beijing_now()
             account.cookie_expires_at = self.extract_cookie_expires_at(sync_result.refreshed_cookies)
@@ -255,7 +255,7 @@ class CredentialService:
         account.status_reason = sync_result.status_reason
         account.last_checked_at = beijing_now()
 
-        if sync_result.refreshed_cookies:
+        if sync_result.status == AccountStatus.healthy and sync_result.refreshed_cookies and "sessionid" in sync_result.refreshed_cookies:
             account.cookie_text = get_secret_service().encrypt(sync_result.refreshed_cookies)
             account.cookie_updated_at = beijing_now()
             account.cookie_expires_at = self.extract_cookie_expires_at(sync_result.refreshed_cookies)
@@ -725,7 +725,7 @@ class CredentialService:
                 browser.close()
 
         is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else False
-        if is_login_failed:
+        if is_login_failed or not (refreshed_cookies and "sessionid" in refreshed_cookies):
             refreshed_cookies = None
 
         account_candidate = self._pick_account_candidate(candidates, parsed)
