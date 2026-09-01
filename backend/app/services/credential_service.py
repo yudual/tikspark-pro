@@ -103,7 +103,7 @@ class CredentialService:
 
     def import_account(self, db: Session, cookie_text: str) -> Account:
         clean_cookie = self.normalize_cookie_storage(cookie_text)
-        sync_result = self._extract_from_cookie(clean_cookie)
+        sync_result = self._extract_from_cookie(clean_cookie, getattr(account, 'id', None))
         parsed = self.parse_cookie_text(clean_cookie)
         account_candidate = sync_result.account_candidate
         friends = self._without_account_candidate(sync_result.friends, account_candidate)
@@ -145,7 +145,7 @@ class CredentialService:
 
     def update_account_cookie(self, db: Session, account: Account, cookie_text: str) -> list[Friend]:
         clean_cookie = self.normalize_cookie_storage(cookie_text)
-        sync_result = self._extract_from_cookie(clean_cookie)
+        sync_result = self._extract_from_cookie(clean_cookie, getattr(account, 'id', None))
         parsed = self.parse_cookie_text(clean_cookie)
         friends = list(sync_result.friends)
         account_candidate = sync_result.account_candidate
@@ -202,7 +202,7 @@ class CredentialService:
 
     def refresh_friends(self, db: Session, account: Account) -> list[Friend]:
         cookie_text = get_secret_service().decrypt(account.cookie_text)
-        sync_result = self._extract_from_cookie(cookie_text)
+        sync_result = self._extract_from_cookie(cookie_text, getattr(account, 'id', None))
         parsed = self.parse_cookie_text(cookie_text)
         friends = list(sync_result.friends)
         account_candidate = sync_result.account_candidate
@@ -248,7 +248,7 @@ class CredentialService:
             )
 
         cookie_text = get_secret_service().decrypt(account.cookie_text)
-        sync_result = self._extract_from_cookie(cookie_text)
+        sync_result = self._extract_from_cookie(cookie_text, getattr(account, 'id', None))
         account.status = sync_result.status
         account.status_reason = sync_result.status_reason
         account.last_checked_at = beijing_now()
@@ -543,7 +543,7 @@ class CredentialService:
         parsed = self._to_playwright_cookies(cookie_text)
         return json.dumps(parsed, ensure_ascii=False)
 
-    def _extract_from_cookie(self, cookie_text: str) -> SyncResult:
+    def _extract_from_cookie(self, cookie_text: str, account_id: int | None = None) -> SyncResult:
         parsed = self.parse_cookie_text(cookie_text)
         cookies = self._to_playwright_cookies(cookie_text)
         candidates: dict[str, UserCandidate] = {}
@@ -575,21 +575,25 @@ class CredentialService:
             if exe_path:
                 launch_kwargs["executable_path"] = exe_path
 
-            browser = playwright.chromium.launch(**launch_kwargs)
+            from pathlib import Path
+            profile_dir = Path(f"/app/backend/data/browser_profiles/account_{account_id or 'default'}")
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            launch_kwargs["viewport"] = {"width": 1280, "height": 800}
+            launch_kwargs["user_agent"] = (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            )
+            launch_kwargs["locale"] = "zh-CN"
+            launch_kwargs["timezone_id"] = "Asia/Shanghai"
 
-            context = browser.new_context(
-                viewport={"width": 1440, "height": 960},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-                locale="zh-CN",
-                timezone_id="Asia/Shanghai",
+            context = playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                **launch_kwargs,
             )
             context.add_init_script(PLAYWRIGHT_STEALTH_SCRIPT)
             context.add_cookies(cookies)
-            page = context.new_page()
+            page = context.pages[0] if context.pages else context.new_page()
 
             try:
                 # 访问个人主页建立上下文
@@ -715,10 +719,10 @@ class CredentialService:
                     pass
 
             except PlaywrightTimeoutError as exc:
-                browser.close()
+                context.close()
                 raise ValueError(f"加载抖音页面超时，请检查网络或代理连接: {exc}") from exc
             finally:
-                browser.close()
+                context.close()
 
         is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else False
         if is_login_failed or not (refreshed_cookies and "sessionid" in refreshed_cookies):

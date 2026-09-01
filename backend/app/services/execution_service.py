@@ -10,6 +10,7 @@ import random
 import re
 import shutil
 import time
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from playwright.sync_api import Locator, Page, Response, sync_playwright
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 CREATOR_CHAT_URL = "https://creator.douyin.com/creator-micro/data/following/chat"
 CONSUMER_CHAT_URL = "https://www.douyin.com/chat"
+PROFILE_ROOT_DIR = Path("/app/backend/data/browser_profiles")
 
 LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密码登录", "请先登录", "未登录")
 DISMISS_BUTTON_TEXTS = ("取消", "暂不", "知道了", "关闭", "稍后再说", "继续逛逛", "暂不开启", "我知道了", "好的", "确定", "确认")
@@ -271,7 +273,6 @@ class ExecutionService:
                 marker_loc = page.get_by_text(marker, exact=True).first
                 if marker_loc.count() and marker_loc.is_visible():
                     return True
-            # 检查是否有未登录指示
             unlogged_loc = page.locator('text="未登录"').first
             if unlogged_loc.count() and unlogged_loc.is_visible():
                 return True
@@ -416,8 +417,8 @@ class ExecutionService:
                 continue
 
     def _open_user_profile_and_chat(
-        self, page: Page, context: Any, target_name: str, dy_id: str, sec_uid: str = ""
-    ) -> Page | None:
+        self, page: Page, target_name: str, dy_id: str, sec_uid: str = ""
+    ) -> bool:
         effective_sec_uid = (sec_uid or "").strip()
         if not effective_sec_uid and dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
             effective_sec_uid = dy_id.strip()
@@ -430,20 +431,21 @@ class ExecutionService:
                 self._dismiss_dialogs(page)
 
                 if self._check_login_required(page):
-                    return None
+                    return False
 
                 # 寻找个人主页上的【私信】按钮
-                dm_btn = page.get_by_text("私信", exact=True).first
-                if dm_btn.count() and dm_btn.is_visible():
-                    dm_btn.click(timeout=3000)
-                    time.sleep(2.5)
-                    self._dismiss_dialogs(page)
-                    if self._find_input_box(page):
-                        return page
-            except Exception:
-                pass
+                for dm_text in ("私信", "发消息"):
+                    dm_btn = page.get_by_text(dm_text, exact=True).first
+                    if dm_btn.count() and dm_btn.is_visible():
+                        dm_btn.click(timeout=3000)
+                        time.sleep(2.5)
+                        self._dismiss_dialogs(page)
+                        if self._find_input_box(page):
+                            return True
+            except Exception as e:
+                logger.debug("Failed opening profile for %s: %s", target_name, e)
 
-        return None
+        return False
 
     def _find_input_box(self, page: Page) -> Locator | None:
         deadline = time.time() + 8
@@ -695,6 +697,11 @@ class ExecutionService:
             "server_msg_id": "",
         }
 
+        # 持久化 Browser Profile 目录（保留 LocalStorage、IndexedDB、设备指纹私钥）
+        acc_id = getattr(account, "id", None) or "default"
+        profile_dir = PROFILE_ROOT_DIR / f"account_{acc_id}"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
         browser_args = [
             "--disable-dev-shm-usage",
             "--no-sandbox",
@@ -721,25 +728,28 @@ class ExecutionService:
             "headless": True,
             "args": browser_args,
             "proxy": proxy_settings,
+            "viewport": {"width": 1280, "height": 800},
+            "user_agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "locale": "zh-CN",
+            "timezone_id": "Asia/Shanghai",
         }
         if exe_path:
             launch_kwargs["executable_path"] = exe_path
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(**launch_kwargs)
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                ),
-                locale="zh-CN",
-                timezone_id="Asia/Shanghai",
+            # 使用持久化上下文 launch_persistent_context
+            context = playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                **launch_kwargs,
             )
             context.add_init_script(PLAYWRIGHT_STEALTH_SCRIPT)
             context.add_cookies(cookies)
-            page = context.new_page()
+
+            page = context.pages[0] if context.pages else context.new_page()
             page.set_default_navigation_timeout(40000)
             page.set_default_timeout(20000)
 
@@ -777,10 +787,7 @@ class ExecutionService:
 
                 # 策略 1: 如果有 sec_uid，优先访问个人主页点击【私信】唤起对话
                 if target_sec_uid:
-                    opened_page = self._open_user_profile_and_chat(page, context, target_name, target_dy_id, target_sec_uid)
-                    if opened_page:
-                        active_page = opened_page
-                        opened = True
+                    opened = self._open_user_profile_and_chat(page, target_name, target_dy_id, target_sec_uid)
 
                 # 策略 2: 访问创作者中心私信互动中心
                 if not opened:
@@ -931,15 +938,7 @@ class ExecutionService:
                 )
             finally:
                 try:
-                    page.close()
-                except Exception:
-                    pass
-                try:
                     context.close()
-                except Exception:
-                    pass
-                try:
-                    browser.close()
                 except Exception:
                     pass
                 gc.collect()
