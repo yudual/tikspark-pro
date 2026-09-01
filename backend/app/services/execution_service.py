@@ -226,7 +226,7 @@ class ExecutionService:
             name = k.strip()
             value = v.strip()
             if name:
-                cookies.append({"name": name, "value": value, "domain": ".douyin.com", "path": "/"})
+                cookies.append({"name": name, "value": value, "domain": ".douyin.com", "path": "/", "secure": True, "sameSite": "Lax"})
         return cookies
 
     def _dismiss_dialogs(self, page: Page) -> int:

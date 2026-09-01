@@ -1,3 +1,9 @@
+
+def _clear_account_profile(account_id: int | None):
+    if account_id:
+        p = Path(f"/app/backend/data/browser_profiles/account_{account_id}")
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
 from __future__ import annotations
 
 import json
@@ -144,6 +150,7 @@ class CredentialService:
         return account
 
     def update_account_cookie(self, db: Session, account: Account, cookie_text: str) -> list[Friend]:
+        _clear_account_profile(getattr(account, 'id', None))
         clean_cookie = self.normalize_cookie_storage(cookie_text)
         sync_result = self._extract_from_cookie(clean_cookie, getattr(account, 'id', None))
         parsed = self.parse_cookie_text(clean_cookie)
