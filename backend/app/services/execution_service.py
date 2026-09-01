@@ -793,18 +793,21 @@ class ExecutionService:
             def _handle_response(resp: Response) -> None:
                 try:
                     url = resp.url
-                    if "/v1/message/send" in url or "imapi.douyin.com" in url or "/web/im/" in url:
+                    # 仅精准捕获真正的发信接口 POST 请求，避免被其他普通的轮询/拉取接口误伤
+                    if resp.request.method.upper() == "POST" and any(k in url for k in ("/v1/message/send", "/send/msg/", "/web/im/send/msg/", "/message/send")):
                         if resp.status == 200:
                             data = resp.json()
                             status_code = data.get("status_code", data.get("err_no", data.get("code")))
-                            if status_code in (0, "0", None) and (data.get("server_message_id") or data.get("data") or data.get("msg_id")):
+                            if status_code in (0, "0"):
                                 send_receipt["seen"] = True
                                 send_receipt["ok"] = True
                                 send_receipt["status_code"] = 0
-                            else:
+                            elif status_code is not None:
                                 send_receipt["seen"] = True
                                 send_receipt["ok"] = False
-                                send_receipt["error"] = str(data.get("status_msg") or data.get("message") or f"状态码: {status_code}")
+                                send_receipt["status_code"] = status_code
+                                msg = data.get("status_msg") or data.get("message") or f"状态码: {status_code}"
+                                send_receipt["error"] = str(msg)
                 except Exception:
                     pass
 
