@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 CREATOR_CHAT_URL = "https://creator.douyin.com/creator-micro/data/following/chat"
 CONSUMER_CHAT_URL = "https://www.douyin.com/chat"
 
-LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密码登录", "请先登录")
+LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密码登录", "请先登录", "未登录")
 DISMISS_BUTTON_TEXTS = ("取消", "暂不", "知道了", "关闭", "稍后再说", "继续逛逛", "暂不开启", "我知道了", "好的", "确定", "确认")
 DIALOG_SELECTORS = (".semi-modal-content", '[role="dialog"]', ".semi-toast", '[class*="modal"]', ".semi-modal-wrap")
 
@@ -107,17 +107,12 @@ SPARK_STICKER_TOKEN = "[火花]"
 PLAYWRIGHT_STEALTH_SCRIPT = """
 (() => {
     try {
-        // 1. 隐藏 webdriver
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined,
         });
-
-        // 2. 伪装 platform 为 Win32，与 User-Agent 保持一致（防止 Linux 暴露）
         Object.defineProperty(navigator, 'platform', {
             get: () => 'Win32',
         });
-
-        // 3. 伪装硬件特征
         Object.defineProperty(navigator, 'hardwareConcurrency', {
             get: () => 8,
         });
@@ -128,61 +123,28 @@ PLAYWRIGHT_STEALTH_SCRIPT = """
             get: () => 'Google Inc.',
         });
 
-        // 4. 伪装 WebGL 渲染器（防止暴露 Google SwiftShader / Mesa）
         const getParameter = WebGLRenderingContext.prototype.getParameter;
         WebGLRenderingContext.prototype.getParameter = function(parameter) {
-            if (parameter === 37445) {
-                return 'Google Inc. (NVIDIA)';
-            }
-            if (parameter === 37446) {
-                return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-            }
+            if (parameter === 37445) return 'Google Inc. (NVIDIA)';
+            if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
             return getParameter.apply(this, arguments);
         };
         if (typeof WebGL2RenderingContext !== 'undefined') {
             const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
             WebGL2RenderingContext.prototype.getParameter = function(parameter) {
-                if (parameter === 37445) {
-                    return 'Google Inc. (NVIDIA)';
-                }
-                if (parameter === 37446) {
-                    return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                }
+                if (parameter === 37445) return 'Google Inc. (NVIDIA)';
+                if (parameter === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
                 return getParameter2.apply(this, arguments);
             };
         }
 
-        // 5. 伪装 window.chrome
         window.chrome = {
-            app: {
-                isInstalled: false,
-                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
-            },
-            runtime: {
-                OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-                OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-                PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-                RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' }
-            }
+            app: { isInstalled: false },
+            runtime: {}
         };
-
-        // 6. 伪装语言与插件
         Object.defineProperty(navigator, 'languages', {
             get: () => ['zh-CN', 'zh', 'en'],
         });
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5],
-        });
-
-        const originalQuery = window.navigator.permissions.query;
-        window.navigator.permissions.query = (parameters) => (
-            parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission }) :
-                originalQuery(parameters)
-        );
     } catch (e) {}
 })();
 """
@@ -196,14 +158,10 @@ def get_browser_executable_path() -> str | None:
 
 
 def normalize_friend_name(name: str | None) -> str:
-    """去除特殊符号、空格、emoji，以便进行容错模糊匹配。"""
     if not name:
         return ""
-    # 去除括号备注部分，如 "张三 (同事)" -> "张三"
     cleaned = re.sub(r"[\(（\[【].*?[\)）\]】]", "", name)
-    # 去除空白与标点
     cleaned = re.sub(r"[\s\-_@#\$%^&*\+=\|:;\"'<>,.?/~`！￥…—\u200b\u200c\u200d\ufeff\xa0]+", "", cleaned)
-    # 去除常见 emoji 编码段
     cleaned = re.sub(r"[\U00010000-\U0010ffff\uD800-\uDBFF\uDC00-\uDFFF\u2600-\u27BF]", "", cleaned)
     return cleaned.strip().casefold()
 
@@ -271,7 +229,6 @@ class ExecutionService:
         return cookies
 
     def _dismiss_dialogs(self, page: Page) -> int:
-        """关闭非登录弹窗，绝不触碰登录弹窗。"""
         dismissed_count = 0
         for _ in range(3):
             action_taken = False
@@ -309,12 +266,15 @@ class ExecutionService:
         return dismissed_count
 
     def _check_login_required(self, page: Page) -> bool:
-        """检查页面是否出现了登录遮罩或登录表单。"""
         try:
             for marker in LOGIN_DIALOG_MARKERS:
                 marker_loc = page.get_by_text(marker, exact=True).first
                 if marker_loc.count() and marker_loc.is_visible():
                     return True
+            # 检查是否有未登录指示
+            unlogged_loc = page.locator('text="未登录"').first
+            if unlogged_loc.count() and unlogged_loc.is_visible():
+                return True
         except Exception:
             pass
         return False
@@ -338,7 +298,6 @@ class ExecutionService:
         return False
 
     def _try_solve_slider_captcha(self, page: Page) -> bool:
-        # 轻量化尝试，若无验证码直接返回
         if not self._is_captcha_page(page):
             return True
         return False
@@ -346,16 +305,15 @@ class ExecutionService:
     def _check_waf_or_captcha(self, page: Page) -> str | None:
         try:
             if self._is_captcha_page(page):
-                return "检测到抖音安全验证码/滑块风控拦截，请人工在浏览器中完成验证或配置代理 IP。"
+                return "检测到抖音安全验证码/滑块风控拦截，请在浏览器中完成验证。"
             content = page.content()
             if len(content) < 400:
-                return "检测到页面内容异常过短或空白，可能被抖音 WAF 安全风控拦截或网络慢。"
+                return "检测到页面内容异常过短或空白，可能被抖音 WAF 安全风控拦截。"
         except Exception:
             pass
         return None
 
     def _open_creator_friends_tab(self, page: Page) -> bool:
-        """在创作者中心私信页面打开【好友/互关】选项卡。"""
         self._dismiss_dialogs(page)
         sub_app = page.locator('#sub-app')
         candidates = [
@@ -379,19 +337,16 @@ class ExecutionService:
         return False
 
     def _find_friend_in_creator_or_chat(self, page: Page, name: str, dy_id: str, sec_uid: str = "") -> Locator | None:
-        """在页面联系人列表中通过精准文本、归一化模糊匹配定位好友行。"""
         if not name and not dy_id and not sec_uid:
             return None
 
         norm_name = normalize_friend_name(name)
         norm_dy_id = normalize_friend_name(dy_id)
 
-        # 1. 尝试直接点击已可见好友项
-        deadline = time.time() + 25
+        deadline = time.time() + 20
         scrolled_rounds = 0
 
         while time.time() < deadline:
-            # 尝试各种好友项选择器
             for row_sel in FRIEND_ROW_SELECTORS:
                 try:
                     for item in page.locator(row_sel).all():
@@ -401,14 +356,12 @@ class ExecutionService:
                         if not item_text:
                             continue
                         norm_item_text = normalize_friend_name(item_text)
-                        # 精准匹配或归一化包含
                         if (name and name in item_text) or (norm_name and norm_name in norm_item_text) or (norm_dy_id and norm_dy_id in norm_item_text):
                             return item
                 except Exception:
                     continue
 
-            # 滚动联系人列表以加载更多
-            if scrolled_rounds < 12:
+            if scrolled_rounds < 8:
                 scrolled = False
                 for scroll_sel in SCROLLABLE_FRIENDS_SELECTORS:
                     try:
@@ -426,7 +379,7 @@ class ExecutionService:
                     except Exception:
                         pass
                 scrolled_rounds += 1
-                time.sleep(0.6)
+                time.sleep(0.5)
             else:
                 break
 
@@ -465,26 +418,35 @@ class ExecutionService:
     def _open_user_profile_and_chat(
         self, page: Page, context: Any, target_name: str, dy_id: str, sec_uid: str = ""
     ) -> Page | None:
-        """通过 sec_uid 直达会话或个人主页唤起私信。"""
         effective_sec_uid = (sec_uid or "").strip()
         if not effective_sec_uid and dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
             effective_sec_uid = dy_id.strip()
 
         if effective_sec_uid:
             try:
-                direct_url = f"https://www.douyin.com/chat?to_sec_uid={effective_sec_uid}"
-                page.goto(direct_url, timeout=30000, wait_until="domcontentloaded")
-                time.sleep(2.0)
+                profile_url = f"https://www.douyin.com/user/{effective_sec_uid}"
+                page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
+                time.sleep(3.0)
                 self._dismiss_dialogs(page)
-                if self._find_input_box(page):
-                    return page
+
+                if self._check_login_required(page):
+                    return None
+
+                # 寻找个人主页上的【私信】按钮
+                dm_btn = page.get_by_text("私信", exact=True).first
+                if dm_btn.count() and dm_btn.is_visible():
+                    dm_btn.click(timeout=3000)
+                    time.sleep(2.5)
+                    self._dismiss_dialogs(page)
+                    if self._find_input_box(page):
+                        return page
             except Exception:
                 pass
 
         return None
 
     def _find_input_box(self, page: Page) -> Locator | None:
-        deadline = time.time() + 10
+        deadline = time.time() + 8
         while time.time() < deadline:
             for selector in INPUT_SELECTORS:
                 try:
@@ -493,7 +455,7 @@ class ExecutionService:
                         return loc
                 except Exception:
                     continue
-            time.sleep(0.5)
+            time.sleep(0.4)
         return None
 
     def _find_emoji_button(self, page: Page) -> Locator | None:
@@ -579,7 +541,7 @@ class ExecutionService:
             input_box.click(timeout=1500)
             input_box.focus()
             for char in text:
-                page.keyboard.type(char, delay=random.randint(20, 60))
+                page.keyboard.type(char, delay=random.randint(20, 50))
         except Exception:
             pass
 
@@ -593,7 +555,6 @@ class ExecutionService:
         if text in current_text or (current_text and len(current_text) > 0):
             return True, ""
 
-        # DOM 写入兜底
         try:
             page.evaluate(
                 """([el, val]) => {
@@ -617,7 +578,6 @@ class ExecutionService:
     def _flush_text_message(
         self, page: Page, input_box: Locator, content: str, send_receipt: dict[str, Any]
     ) -> tuple[bool, str]:
-        """发送文本消息，结合网络层响应回执与 DOM 进行严格递交确认。"""
         send_receipt["seen"] = False
         send_receipt["ok"] = False
         send_receipt["error"] = ""
@@ -626,7 +586,7 @@ class ExecutionService:
         if not typed_ok:
             return False, err
 
-        time.sleep(random.uniform(0.3, 0.6))
+        time.sleep(random.uniform(0.3, 0.5))
         page.keyboard.press("Enter")
         time.sleep(0.4)
 
@@ -639,10 +599,9 @@ class ExecutionService:
             except Exception:
                 continue
 
-        # 等待网络回执与状态
-        deadline = time.time() + 6
+        deadline = time.time() + 5
         while time.time() < deadline:
-            time.sleep(0.6)
+            time.sleep(0.5)
             fail_reason = self._detect_send_failure(page)
             if fail_reason:
                 return False, fail_reason
@@ -653,8 +612,7 @@ class ExecutionService:
                 return False, f"抖音接口返回发送失败: {send_receipt.get('error', '未知原因')}"
 
             if self._is_input_cleared(input_box, content):
-                # 输入框已被清空且无报错
-                time.sleep(0.8)
+                time.sleep(0.6)
                 if send_receipt.get("ok") or not self._detect_send_failure(page):
                     return True, "消息已提交并清空输入框。"
 
@@ -665,7 +623,6 @@ class ExecutionService:
         if fail_reason:
             return False, fail_reason
 
-        # 检查输入框是否清空
         if self._is_input_cleared(input_box, content):
             return True, "消息已提交并清空输入框。"
 
@@ -674,7 +631,6 @@ class ExecutionService:
     def _send_spark_sticker(
         self, page: Page, input_box: Locator, send_receipt: dict[str, Any]
     ) -> tuple[bool, str, bool]:
-        """打开表情面板点击续火花表情，结合网络层回执与 🔥 符号兜底。"""
         send_receipt["seen"] = False
         send_receipt["ok"] = False
         button = self._find_emoji_button(page)
@@ -688,7 +644,7 @@ class ExecutionService:
                 except Exception:
                     pass
 
-            time.sleep(0.6)
+            time.sleep(0.5)
             item = self._find_spark_item(page)
             if item is not None:
                 try:
@@ -699,7 +655,7 @@ class ExecutionService:
                     except Exception:
                         pass
 
-                deadline = time.time() + 5
+                deadline = time.time() + 4
                 while time.time() < deadline:
                     time.sleep(0.5)
                     fail_reason = self._detect_send_failure(page)
@@ -713,7 +669,6 @@ class ExecutionService:
             except Exception:
                 pass
 
-        # 表情未发出，严格以 🔥 字符兜底
         fallback_ok, reason = self._flush_text_message(page, input_box, "🔥", send_receipt)
         if fallback_ok:
             return True, "已自动以 🔥 表情字符兜底发送并确认成功。", True
@@ -732,7 +687,6 @@ class ExecutionService:
         if not cookies:
             return ExecutionResult(False, "凭证无效", "未能解析到有效 Cookie")
 
-        # 网络层消息回执捕获器
         send_receipt: dict[str, Any] = {
             "seen": False,
             "ok": False,
@@ -741,7 +695,6 @@ class ExecutionService:
             "server_msg_id": "",
         }
 
-        # 小鸡弱 VPS 极端低资源浏览器参数
         browser_args = [
             "--disable-dev-shm-usage",
             "--no-sandbox",
@@ -793,7 +746,6 @@ class ExecutionService:
             def _handle_response(resp: Response) -> None:
                 try:
                     url = resp.url
-                    # 仅精准捕获真正的发信接口 POST 请求，避免被其他普通的轮询/拉取接口误伤
                     if resp.request.method.upper() == "POST" and any(k in url for k in ("/v1/message/send", "/send/msg/", "/web/im/send/msg/", "/message/send")):
                         if resp.status == 200:
                             data = resp.json()
@@ -813,17 +765,7 @@ class ExecutionService:
 
             page.on("response", _handle_response)
 
-            def _get_context_cookies() -> str | None:
-                try:
-                    c = context.cookies()
-                    if c:
-                        return json.dumps(c, ensure_ascii=False)
-                except Exception:
-                    pass
-                return None
-
             try:
-                # 1. 优先访问创作者平台私信页面（包含互关好友全量列表，不易触发消费端搜索风控）
                 target_name = friend.friend_nickname
                 target_dy_id = friend.friend_dy_id
                 target_sec_uid = getattr(friend, "sec_uid", "") or ""
@@ -833,47 +775,53 @@ class ExecutionService:
                 active_page = page
                 opened = False
 
-                # 尝试 A: 访问创作者中心
-                try:
-                    page.goto(CREATOR_CHAT_URL, timeout=35000, wait_until="domcontentloaded")
-                    time.sleep(2.0)
-                    self._dismiss_dialogs(page)
+                # 策略 1: 如果有 sec_uid，优先访问个人主页点击【私信】唤起对话
+                if target_sec_uid:
+                    opened_page = self._open_user_profile_and_chat(page, context, target_name, target_dy_id, target_sec_uid)
+                    if opened_page:
+                        active_page = opened_page
+                        opened = True
 
-                    if not self._check_login_required(page):
-                        # 打开【好友/互关】Tab
-                        self._open_creator_friends_tab(page)
-                        friend_item = self._find_friend_in_creator_or_chat(page, target_name, target_dy_id, target_sec_uid)
-                        if friend_item is not None:
-                            try:
-                                friend_item.click(timeout=3000)
-                            except Exception:
-                                page.evaluate("(el) => el.click()", friend_item.element_handle())
-                            time.sleep(1.5)
-                            opened = True
-                except Exception:
-                    pass
+                # 策略 2: 访问创作者中心私信互动中心
+                if not opened:
+                    try:
+                        page.goto(CREATOR_CHAT_URL, timeout=35000, wait_until="domcontentloaded")
+                        time.sleep(2.0)
+                        self._dismiss_dialogs(page)
 
-                # 尝试 B: 若创作者中心未打开，fallback 访问消费端私信主页
+                        if not self._check_login_required(page):
+                            self._open_creator_friends_tab(page)
+                            friend_item = self._find_friend_in_creator_or_chat(page, target_name, target_dy_id, target_sec_uid)
+                            if friend_item is not None:
+                                try:
+                                    friend_item.click(timeout=3000)
+                                except Exception:
+                                    page.evaluate("(el) => el.click()", friend_item.element_handle())
+                                time.sleep(1.5)
+                                opened = True
+                    except Exception:
+                        pass
+
+                # 策略 3: Fallback 访问消费端私信主页
                 if not opened:
                     try:
                         fallback_chat_url = CONSUMER_CHAT_URL
                         if target_sec_uid:
                             fallback_chat_url = f"{CONSUMER_CHAT_URL}?to_sec_uid={target_sec_uid}"
                         page.goto(fallback_chat_url, timeout=35000, wait_until="domcontentloaded")
-                        time.sleep(2.0)
+                        time.sleep(3.0)
                         self._dismiss_dialogs(page)
 
                         if self._check_login_required(page):
                             return ExecutionResult(
                                 False,
                                 "账号凭证已失效",
-                                "检测到抖音网页弹出登录对话框，Cookie 凭证已过期或被风控失效，请重新获取并更新 Cookie。",
-                                refreshed_cookies=_get_context_cookies(),
+                                "检测到抖音页面提示未登录或弹出登录弹窗，Cookie 凭证已过期，请在【账号管理】重新更新 Cookie。",
                             )
 
                         waf_issue = self._check_waf_or_captcha(page)
                         if waf_issue:
-                            return ExecutionResult(False, "页面被风控拦截", waf_issue, refreshed_cookies=_get_context_cookies())
+                            return ExecutionResult(False, "页面被风控拦截", waf_issue)
 
                         friend_item = self._find_friend_in_creator_or_chat(page, target_name, target_dy_id, target_sec_uid)
                         if friend_item is not None:
@@ -888,25 +836,30 @@ class ExecutionService:
                     except Exception as e:
                         logger.warning("Consumer chat navigation failed: %s", e)
 
-                if not opened and not self._find_input_box(page):
+                if self._check_login_required(active_page):
+                    return ExecutionResult(
+                        False,
+                        "账号凭证已失效",
+                        "检测到抖音页面提示未登录或弹出登录弹窗，Cookie 凭证已过期，请在【账号管理】重新更新 Cookie。",
+                    )
+
+                if not opened and not self._find_input_box(active_page):
                     return ExecutionResult(
                         False,
                         "未找到好友",
-                        f"在创作者中心与私信列表中均未定位到好友 {target_name} ({target_dy_id})，请确认该好友是否在互关列表中。",
-                        refreshed_cookies=_get_context_cookies(),
+                        f"在主页私信与列表中均未定位到好友 {target_name} ({target_dy_id})，请确认该好友是否在互关列表中。",
                     )
 
-                # 2. 定位输入框
+                # 定位输入框
                 input_box = self._find_input_box(active_page)
                 if not input_box:
                     return ExecutionResult(
                         False,
                         "未找到输入框",
                         "无法定位到私信聊天输入框",
-                        refreshed_cookies=_get_context_cookies(),
                     )
 
-                # 3. 逐段发送文本与表情
+                # 逐段发送文本与表情
                 segments = split_spark_content(content)
                 pending_text: list[str] = []
                 spark_count = 0
@@ -920,7 +873,7 @@ class ExecutionService:
                         except Exception:
                             pass
                         for char in value:
-                            active_page.keyboard.type(char, delay=random.randint(20, 60))
+                            active_page.keyboard.type(char, delay=random.randint(20, 50))
                     elif kind == "spark":
                         if pending_text:
                             text_content = "".join(pending_text)
@@ -930,10 +883,9 @@ class ExecutionService:
                                     False,
                                     "发送文本失败",
                                     f"向 {target_name} 发送文本失败: {flush_err}",
-                                    refreshed_cookies=_get_context_cookies(),
                                 )
                             pending_text = []
-                            time.sleep(random.uniform(0.5, 1.0))
+                            time.sleep(random.uniform(0.4, 0.8))
 
                         ok, reason, used_fallback = self._send_spark_sticker(active_page, input_box, send_receipt)
                         if not ok:
@@ -941,7 +893,6 @@ class ExecutionService:
                                 False,
                                 "发送火花表情失败",
                                 reason,
-                                refreshed_cookies=_get_context_cookies(),
                             )
                         spark_count += 1
                         if used_fallback:
@@ -955,10 +906,8 @@ class ExecutionService:
                             False,
                             "发送文本失败",
                             f"向 {target_name} 发送文本失败: {flush_err}",
-                            refreshed_cookies=_get_context_cookies(),
                         )
 
-                # 4. 构建证据描述
                 evidence: list[str] = []
                 if spark_count > 0:
                     if fallback_spark_used:
@@ -968,12 +917,10 @@ class ExecutionService:
                 if len(segments) > spark_count:
                     evidence.append("文本内容已发出")
 
-                refreshed_cookies = _get_context_cookies()
                 return ExecutionResult(
                     True,
                     "发送成功",
                     f"成功向 {target_name} 发送。{('；'.join(evidence)) if evidence else '消息已确认发送'}",
-                    refreshed_cookies=refreshed_cookies,
                 )
 
             except Exception as e:
@@ -981,7 +928,6 @@ class ExecutionService:
                     False,
                     "执行异常",
                     str(e),
-                    refreshed_cookies=_get_context_cookies(),
                 )
             finally:
                 try:
@@ -996,7 +942,6 @@ class ExecutionService:
                     browser.close()
                 except Exception:
                     pass
-                # 显式回收垃圾，为弱 VPS 释放内存
                 gc.collect()
 
 
