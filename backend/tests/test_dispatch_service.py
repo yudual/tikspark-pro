@@ -159,7 +159,27 @@ class DispatchServiceTests(unittest.TestCase):
         self.assertIsNone(self.friend.next_run_at)
 
 
-    def test_cookie_refreshed_even_on_failure(self):
+
+    def test_cookie_is_not_refreshed_on_success(self):
+        with (
+            patch.object(
+                dispatch_service,
+                "execution_service",
+                FakeExecution(SimpleNamespace(success=True, summary="发送成功", details="已确认", refreshed_cookies="new-refreshed-cookie")),
+            ),
+            patch.object(
+                dispatch_service,
+                "get_settings",
+                return_value=_settings(),
+            ),
+        ):
+            dispatch_service.dispatch_active_messages(self.db)
+
+        self.db.refresh(self.account)
+        self.assertIsNone(self.account.cookie_updated_at)
+        self.assertEqual("encrypted-fake", self.account.cookie_text)
+
+    def test_cookie_is_not_refreshed_on_failure(self):
         with (
             patch.object(
                 dispatch_service,
@@ -175,11 +195,10 @@ class DispatchServiceTests(unittest.TestCase):
             dispatch_service.dispatch_active_messages(self.db)
 
         self.db.refresh(self.account)
-        self.assertIsNotNone(self.account.cookie_updated_at)
-        self.assertTrue(self.account.cookie_text.startswith("fernet:"))
+        self.assertIsNone(self.account.cookie_updated_at)
+        self.assertEqual("encrypted-fake", self.account.cookie_text)
 
 
 if __name__ == "__main__":
     unittest.main()
-
 

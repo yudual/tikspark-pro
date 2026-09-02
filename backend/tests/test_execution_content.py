@@ -1,8 +1,14 @@
 """[火花] 占位符解析测试。"""
 
 import unittest
+from unittest.mock import patch
 
-from backend.app.services.execution_service import SPARK_STICKER_TOKEN, split_spark_content
+from backend.app.services.execution_service import (
+    SPARK_STICKER_TOKEN,
+    ExecutionService,
+    split_spark_content,
+    target_identity_matches_text,
+)
 
 
 class SplitSparkContentTests(unittest.TestCase):
@@ -64,6 +70,44 @@ class SplitSparkContentTests(unittest.TestCase):
         self.assertEqual(normalize_friend_name("Alice ✨ Spark"), "alicespark")
         self.assertEqual(normalize_friend_name(""), "")
         self.assertEqual(normalize_friend_name(None), "")
+
+
+    def test_target_identity_match_is_strict_enough_for_send_guard(self):
+        self.assertTrue(target_identity_matches_text("Serendipity^", "Serendipity^", "nimingzhe114"))
+        self.assertTrue(target_identity_matches_text("抖音号：nimingzhe114", "Serendipity^", "nimingzhe114"))
+        self.assertFalse(target_identity_matches_text("当前会话：其他好友", "Serendipity^", "nimingzhe114"))
+        self.assertFalse(target_identity_matches_text("S", "Serendipity^", "nimingzhe114"))
+
+    def test_mixed_content_flushes_each_text_chunk_once(self):
+        service = ExecutionService()
+        send_receipt = {}
+
+        with (
+            patch.object(
+                service,
+                "_flush_text_message",
+                side_effect=[(True, ""), (True, "")],
+            ) as flush_text,
+            patch.object(
+                service,
+                "_send_spark_sticker",
+                return_value=(True, "ok", False),
+            ) as send_spark,
+            patch("backend.app.services.execution_service.time.sleep"),
+        ):
+            result = service._send_content_segments(
+                object(),
+                object(),
+                "早呀 [火花] 记得续上",
+                send_receipt,
+            )
+
+        self.assertEqual(result, (True, "", 1, False))
+        self.assertEqual(
+            [call.args[2] for call in flush_text.call_args_list],
+            ["早呀 ", " 记得续上"],
+        )
+        send_spark.assert_called_once()
 
 
 if __name__ == "__main__":

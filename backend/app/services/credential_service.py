@@ -1,24 +1,18 @@
 from __future__ import annotations
 
-def _clear_account_profile(account_id: int | None):
-    if account_id:
-        p = Path(f"/app/backend/data/browser_profiles/account_{account_id}")
-        if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
-
 import json
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
-
-import os
-import shutil
 
 from ..models import Account, AccountStatus, Friend, Message, MessageType
 from ..schemas import (
@@ -29,7 +23,7 @@ from ..schemas import (
 )
 from ..time_utils import beijing_now, from_beijing_epoch
 from .app_settings_service import get_default_schedule_window
-from .execution_service import PLAYWRIGHT_STEALTH_SCRIPT
+from .execution_service import PLAYWRIGHT_STEALTH_SCRIPT, get_profile_root_dir
 from .schedule_service import compute_friend_next_run_at, get_local_now, validate_schedule_window
 from .secret_service import get_secret_service
 
@@ -42,6 +36,13 @@ SYSTEM_BOT_KEYWORDS: set[str] = {
     "钱包小助手", "直播小助手", "抖音商城", "抖音小店", "抖音创作仔", "抖音搜索",
     "dou+", "dou+小助手"
 }
+
+
+def _clear_account_profile(account_id: int | None) -> None:
+    if account_id:
+        profile_dir = get_profile_root_dir() / f"account_{account_id}"
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 def get_browser_executable_path() -> str | None:
@@ -61,12 +62,12 @@ class ParsedCredential:
 class UserCandidate:
     uid: str
     display_id: str
-    sec_uid: str
     nickname: str
     avatar_url: str
     remark: str
     source: str
     self_score: int = 0
+    sec_uid: str = ""
 
 
 @dataclass
@@ -109,7 +110,8 @@ class CredentialService:
 
     def import_account(self, db: Session, cookie_text: str) -> Account:
         clean_cookie = self.normalize_cookie_storage(cookie_text)
-        sync_result = self._extract_from_cookie(clean_cookie, getattr(account, 'id', None))
+        # The account does not have a database id until after the initial sync.
+        sync_result = self._extract_from_cookie(clean_cookie, None)
         parsed = self.parse_cookie_text(clean_cookie)
         account_candidate = sync_result.account_candidate
         friends = self._without_account_candidate(sync_result.friends, account_candidate)
@@ -582,8 +584,7 @@ class CredentialService:
             if exe_path:
                 launch_kwargs["executable_path"] = exe_path
 
-            from pathlib import Path
-            profile_dir = Path(f"/app/backend/data/browser_profiles/account_{account_id or 'default'}")
+            profile_dir = get_profile_root_dir() / f"account_{account_id or 'default'}"
             profile_dir.mkdir(parents=True, exist_ok=True)
             launch_kwargs["viewport"] = {"width": 1280, "height": 800}
             launch_kwargs["user_agent"] = (
@@ -599,6 +600,10 @@ class CredentialService:
                 **launch_kwargs,
             )
             context.add_init_script(PLAYWRIGHT_STEALTH_SCRIPT)
+            try:
+                context.clear_cookies()
+            except Exception:
+                pass
             context.add_cookies(cookies)
             page = context.pages[0] if context.pages else context.new_page()
 
@@ -718,12 +723,8 @@ class CredentialService:
                         self_score=0,
                     )
 
-                try:
-                    ctx_cookies = context.cookies()
-                    if ctx_cookies:
-                        refreshed_cookies = json.dumps(ctx_cookies, ensure_ascii=False)
-                except Exception:
-                    pass
+                # 只验证和同步好友，不采集浏览器运行后的 Cookie。
+                # 云端环境可能产生与用户电脑不同的会话状态；写回这些 Cookie 会污染用户手动提供的凭证。
 
             except PlaywrightTimeoutError as exc:
                 context.close()
@@ -732,8 +733,7 @@ class CredentialService:
                 context.close()
 
         is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else False
-        if is_login_failed or not (refreshed_cookies and "sessionid" in refreshed_cookies):
-            refreshed_cookies = None
+        refreshed_cookies = None
 
         account_candidate = self._pick_account_candidate(candidates, parsed)
         friends = self._pick_friend_candidates(candidates, account_candidate, parsed)

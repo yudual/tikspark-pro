@@ -12,17 +12,30 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlparse
 
 from playwright.sync_api import Locator, Page, Response, sync_playwright
 
 from ..models import Account, Friend
+from ..config import get_settings
 from .secret_service import get_secret_service
 
 logger = logging.getLogger(__name__)
 
 CREATOR_CHAT_URL = "https://creator.douyin.com/creator-micro/data/following/chat"
 CONSUMER_CHAT_URL = "https://www.douyin.com/chat"
-PROFILE_ROOT_DIR = Path("/app/backend/data/browser_profiles")
+
+
+def get_profile_root_dir() -> Path:
+    """Keep browser state beside the configured SQLite database."""
+    sqlite_path = Path(get_settings().sqlite_path).expanduser()
+    if not sqlite_path.is_absolute():
+        sqlite_path = Path.cwd() / sqlite_path
+    return sqlite_path.resolve().parent / "browser_profiles"
+
+
+# Kept as a compatibility alias for callers that imported the old constant.
+PROFILE_ROOT_DIR = get_profile_root_dir()
 
 LOGIN_DIALOG_MARKERS = ("扫码登录", "验证码登录", "登录/注册", "密码登录", "请先登录", "未登录")
 DISMISS_BUTTON_TEXTS = ("取消", "暂不", "知道了", "关闭", "稍后再说", "继续逛逛", "暂不开启", "我知道了", "好的", "确定", "确认")
@@ -51,6 +64,14 @@ SEND_BUTTON_SELECTORS = (
     '[class*="send-btn"]',
     '[class*="sendBtn"]',
     '[class*="send_btn"]',
+)
+
+SEARCH_INPUT_SELECTORS = (
+    '#sub-app input[placeholder*="搜索"]',
+    '#sub-app input[placeholder*="查找"]',
+    '#sub-app input[placeholder*="联系人"]',
+    '#sub-app [class*="search"] input',
+    '[class*="chat"] input[placeholder*="搜索"]',
 )
 
 EMOJI_BUTTON_SELECTORS = (
@@ -83,6 +104,11 @@ FRIEND_ROW_SELECTORS = (
     '#sub-app li[role="listitem"]',
     '#sub-app li.semi-list-item',
     'xpath=//*[@id="sub-app"]//div[contains(@class, "semi-list-item-body")]',
+    '#sub-app a[href*="/user/"]',
+    '#sub-app [data-e2e*="user"]',
+    '#sub-app [class*="search-result"]',
+    '#sub-app [class*="result-item"]',
+    '#sub-app [class*="user-card"]',
     "[class*='user-item']",
     "[class*='conversation-item']",
     "[class*='chat-item']",
@@ -101,6 +127,17 @@ SCROLLABLE_FRIENDS_SELECTORS = (
     '[class*="session-list"]',
     '[class*="contact-list"]',
     '[class*="chat-list"]',
+)
+
+CHAT_TARGET_HEADER_SELECTORS = (
+    '#sub-app [class*="chat"] [class*="header"]',
+    '#sub-app [class*="conversation"] [class*="header"]',
+    '#sub-app [class*="im-chat"] [class*="title"]',
+    '#sub-app [class*="chat"] [class*="title"]',
+    '#sub-app [class*="chat"] [class*="name"]',
+    '[class*="chat-header"]',
+    '[class*="conversation-header"]',
+    '[class*="message-header"]',
 )
 
 SPARK_STICKER_TOKEN = "[火花]"
@@ -165,6 +202,26 @@ def normalize_friend_name(name: str | None) -> str:
     cleaned = re.sub(r"[\s\-_@#\$%^&*\+=\|:;\"'<>,.?/~`！￥…—\u200b\u200c\u200d\ufeff\xa0]+", "", cleaned)
     cleaned = re.sub(r"[\U00010000-\U0010ffff\uD800-\uDBFF\uDC00-\uDFFF\u2600-\u27BF]", "", cleaned)
     return cleaned.strip().casefold()
+
+
+def target_identity_matches_text(text: str | None, name: str | None, dy_id: str | None, sec_uid: str | None = "") -> bool:
+    """Return True only when visible chat/list text names the intended recipient."""
+    raw_text = (text or "").strip()
+    if not raw_text:
+        return False
+
+    normalized_text = normalize_friend_name(raw_text)
+    raw_targets = [name or "", dy_id or "", sec_uid or ""]
+    for raw_target in raw_targets:
+        target = str(raw_target or "").strip()
+        if not target:
+            continue
+        if len(target) >= 6 and target in raw_text:
+            return True
+        normalized_target = normalize_friend_name(target)
+        if normalized_target and len(normalized_target) >= 2 and normalized_target in normalized_text:
+            return True
+    return False
 
 
 def split_spark_content(content: str) -> list[tuple[str, str]]:
@@ -311,9 +368,15 @@ class ExecutionService:
         try:
             if self._is_captcha_page(page):
                 return "检测到抖音安全验证码/滑块风控拦截，请在浏览器中完成验证。"
+            url = (page.url or "").strip()
             content = page.content()
-            if len(content) < 400:
-                return "检测到页面内容异常过短或空白，可能被抖音 WAF 安全风控拦截。"
+            if not content or len(content) < 400:
+                if not url or url == "about:blank":
+                    return "抖音页面未能正常加载，当前是空白页，请稍后重试。"
+                return "检测到页面内容异常过短，可能被抖音 WAF 安全风控拦截。"
+            body_text = (page.locator("body").inner_text(timeout=500) or "").strip()
+            if any(marker in body_text for marker in ("访问被拒绝", "安全拦截", "请求异常", "请稍后再试")):
+                return "检测到抖音页面安全拦截，请稍后重试或更换网络环境。"
         except Exception:
             pass
         return None
@@ -345,13 +408,7 @@ class ExecutionService:
         if not name and not dy_id and not sec_uid:
             return None
 
-        norm_name = normalize_friend_name(name)
-        norm_dy_id = normalize_friend_name(dy_id)
-
-        deadline = time.time() + 20
-        scrolled_rounds = 0
-
-        while time.time() < deadline:
+        def find_visible_row() -> Locator | None:
             for row_sel in FRIEND_ROW_SELECTORS:
                 try:
                     for item in page.locator(row_sel).all():
@@ -360,11 +417,19 @@ class ExecutionService:
                         item_text = (item.inner_text(timeout=300) or "").strip()
                         if not item_text:
                             continue
-                        norm_item_text = normalize_friend_name(item_text)
-                        if (name and name in item_text) or (norm_name and norm_name in norm_item_text) or (norm_dy_id and norm_dy_id in norm_item_text):
+                        if target_identity_matches_text(item_text, name, dy_id, sec_uid):
                             return item
                 except Exception:
                     continue
+            return None
+
+        deadline = time.time() + 20
+        scrolled_rounds = 0
+
+        while time.time() < deadline:
+            match = find_visible_row()
+            if match is not None:
+                return match
 
             if scrolled_rounds < 8:
                 scrolled = False
@@ -388,6 +453,24 @@ class ExecutionService:
             else:
                 break
 
+        # Contact lists are often virtualized or limited to recent conversations.
+        # Use the page's own contact search as a final, bounded fallback.
+        queries: list[str] = []
+        for query in (name, dy_id, sec_uid):
+            query = (query or "").strip()
+            if query and query not in queries:
+                queries.append(query)
+        for query in queries:
+            if not self._try_search(page, query):
+                continue
+            search_deadline = time.time() + 4
+            while time.time() < search_deadline:
+                match = find_visible_row()
+                if match is not None:
+                    return match
+                time.sleep(0.3)
+            self._clear_search_box(page)
+
         return None
 
     def _find_friend(self, page: Page, name: str, dy_id: str, sec_uid: str = "") -> Locator | None:
@@ -404,10 +487,84 @@ class ExecutionService:
             pass
         return None
 
+    def _active_chat_mentions_target(self, page: Page, name: str, dy_id: str, sec_uid: str = "") -> bool:
+        """Guard against sending into whatever conversation happened to be open."""
+        for selector in CHAT_TARGET_HEADER_SELECTORS:
+            try:
+                for loc in page.locator(selector).all():
+                    if not loc.is_visible():
+                        continue
+                    text = (loc.inner_text(timeout=300) or "").strip()
+                    if target_identity_matches_text(text, name, dy_id, sec_uid):
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _click_target_by_text(self, page: Page, labels: tuple[str, ...]) -> bool:
+        """Click a profile/message action even when the visible text is nested inside a styled div."""
+        try:
+            handle = page.evaluate_handle(
+                """(labels) => {
+                    const wanted = new Set(labels);
+                    const nodes = Array.from(document.querySelectorAll('button, [role="button"], a, div, span'));
+                    for (const node of nodes) {
+                        const text = (node.innerText || node.textContent || '').trim();
+                        if (!wanted.has(text)) continue;
+                        let cur = node;
+                        for (let i = 0; cur && i < 4; i += 1) {
+                            const tag = cur.tagName ? cur.tagName.toLowerCase() : '';
+                            const role = cur.getAttribute ? cur.getAttribute('role') : '';
+                            if (tag === 'button' || tag === 'a' || role === 'button' || cur.onclick) {
+                                return cur;
+                            }
+                            cur = cur.parentElement;
+                        }
+                        return node;
+                    }
+                    return null;
+                }
+                """,
+                list(labels),
+            )
+            element = handle.as_element()
+            if not element:
+                return False
+            element.click(timeout=3000)
+            return True
+        except Exception:
+            return False
+
     def _clear_search_box(self, page: Page) -> None:
-        pass
+        for selector in SEARCH_INPUT_SELECTORS:
+            try:
+                for search_box in page.locator(selector).all():
+                    if not search_box.is_visible():
+                        continue
+                    search_box.click(timeout=1000)
+                    search_box.press("ControlOrMeta+A")
+                    search_box.press("Backspace")
+                    return
+            except Exception:
+                continue
 
     def _try_search(self, page: Page, query: str) -> bool:
+        query = (query or "").strip()
+        if not query:
+            return False
+        self._clear_search_box(page)
+        for selector in SEARCH_INPUT_SELECTORS:
+            try:
+                for search_box in page.locator(selector).all():
+                    if not search_box.is_visible():
+                        continue
+                    search_box.click(timeout=1000)
+                    search_box.fill(query)
+                    search_box.press("Enter")
+                    time.sleep(0.6)
+                    return True
+            except Exception:
+                continue
         return False
 
     def _scroll_friend_list(self, page: Page) -> None:
@@ -421,8 +578,8 @@ class ExecutionService:
                 continue
 
     def _open_user_profile_and_chat(
-        self, page: Page, target_name: str, dy_id: str, sec_uid: str = ""
-    ) -> bool:
+        self, page: Page, target_name: str, dy_id: str, sec_uid: str = "", context: Any = None
+    ) -> Page | None:
         effective_sec_uid = (sec_uid or "").strip()
         if not effective_sec_uid and dy_id and (dy_id.startswith("MS4w") or len(dy_id) >= 20):
             effective_sec_uid = dy_id.strip()
@@ -430,28 +587,73 @@ class ExecutionService:
         if effective_sec_uid:
             try:
                 profile_url = f"https://www.douyin.com/user/{effective_sec_uid}"
-                page.goto(profile_url, timeout=30000, wait_until="commit")
+                page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
                 time.sleep(3.0)
                 self._dismiss_dialogs(page)
 
                 if self._check_login_required(page):
-                    return False
+                    return None
+                if self._check_waf_or_captcha(page):
+                    return None
 
                 # 寻找个人主页上的【私信】按钮
-                for dm_text in ("私信", "发消息"):
-                    dm_btn = page.get_by_text(dm_text, exact=True).first
-                    if dm_btn.count() and dm_btn.is_visible():
-                        dm_btn.click(timeout=3000)
-                        time.sleep(2.5)
-                        self._dismiss_dialogs(page)
-                        if self._check_login_required(page):
-                            return False
-                        if self._find_input_box(page):
-                            return True
+                dm_labels = ("私信", "发消息", "发私信", "发送消息", "聊天")
+                dm_candidates = [
+                    page.get_by_role("button", name=re.compile(r"^(私信|发消息|发私信|发送消息|聊天)$")).first,
+                    page.locator('[aria-label*="私信"], [title*="私信"], [data-e2e*="message"]').first,
+                    page.locator('xpath=//*[normalize-space()="私信" or normalize-space()="发消息" or normalize-space()="发私信" or normalize-space()="发送消息" or normalize-space()="聊天"]').first,
+                ]
+                for dm_btn in dm_candidates:
+                    clicked = False
+                    try:
+                        if dm_btn.count() and dm_btn.is_visible():
+                            dm_btn.click(timeout=3000)
+                            clicked = True
+                    except Exception:
+                        try:
+                            page.evaluate("(el) => el.click()", dm_btn.element_handle())
+                            clicked = True
+                        except Exception:
+                            clicked = False
+                    if not clicked:
+                        continue
+                    time.sleep(2.0)
+                    self._dismiss_dialogs(page)
+                    if self._check_login_required(page):
+                        return None
+
+                    candidate_pages = [page]
+                    if context is not None:
+                        try:
+                            candidate_pages = list(context.pages)
+                        except Exception:
+                            pass
+                    for candidate_page in reversed(candidate_pages):
+                        try:
+                            if self._find_input_box(candidate_page):
+                                return candidate_page
+                        except Exception:
+                            continue
+
+                if self._click_target_by_text(page, dm_labels):
+                    time.sleep(2.0)
+                    self._dismiss_dialogs(page)
+                    candidate_pages = [page]
+                    if context is not None:
+                        try:
+                            candidate_pages = list(context.pages)
+                        except Exception:
+                            pass
+                    for candidate_page in reversed(candidate_pages):
+                        try:
+                            if self._find_input_box(candidate_page):
+                                return candidate_page
+                        except Exception:
+                            continue
             except Exception as e:
                 logger.debug("Failed opening profile for %s: %s", target_name, e)
 
-        return False
+        return None
 
     def _find_input_box(self, page: Page) -> Locator | None:
         """精准定位私信编辑区，彻底过滤所有网页搜索框、评论框与非聊天输入框。"""
@@ -500,7 +702,12 @@ class ExecutionService:
 
     def _is_input_cleared(self, input_box: Locator, original_text: str) -> bool:
         try:
-            curr = (input_box.inner_text(timeout=300) or "").strip()
+            curr = (
+                input_box.evaluate(
+                    "(el) => (el.innerText || el.textContent || el.value || '').trim()"
+                )
+                or ""
+            ).strip()
             return original_text not in curr
         except Exception:
             return True
@@ -589,24 +796,24 @@ class ExecutionService:
             return False, err
 
         time.sleep(random.uniform(0.3, 0.5))
+        submitted = False
         try:
-            page.evaluate(
-                "(el) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }))",
-                input_box.element_handle(),
-            )
+            for selector in SEND_BUTTON_SELECTORS:
+                btn = page.locator(selector).first
+                if btn.count() and btn.is_visible() and btn.is_enabled():
+                    btn.click(timeout=1000)
+                    submitted = True
+                    break
         except Exception:
             pass
-        page.keyboard.press("Enter")
-        time.sleep(0.4)
-
-        for selector in SEND_BUTTON_SELECTORS:
+        if not submitted:
             try:
-                btn = page.locator(selector).first
-                if btn.count() and btn.is_visible():
-                    btn.click(timeout=1000)
-                    break
+                page.keyboard.press("Enter")
+                submitted = True
             except Exception:
-                continue
+                pass
+        if not submitted:
+            return False, "未能提交抖音私信内容"
 
         # 严格等待网络回执：必须真实拿到抖音服务端的 200/status_code 0 回执
         deadline = time.time() + 6
@@ -627,6 +834,51 @@ class ExecutionService:
             return False, fail_reason
 
         return False, f"向目标输入框提交 {content!r} 后未收到抖音发信网络回执，未实际发出。"
+
+    def _send_content_segments(
+        self, page: Page, input_box: Locator, content: str, send_receipt: dict[str, Any]
+    ) -> tuple[bool, str, int, bool]:
+        """Send text chunks once and resolve each [火花] token independently."""
+        segments = split_spark_content(content)
+        pending_text: list[str] = []
+        spark_count = 0
+        fallback_spark_used = False
+
+        for kind, value in segments:
+            if kind == "text" and value:
+                pending_text.append(value)
+                continue
+
+            if kind != "spark":
+                continue
+
+            if pending_text:
+                text_content = "".join(pending_text)
+                flush_ok, flush_err = self._flush_text_message(
+                    page, input_box, text_content, send_receipt
+                )
+                if not flush_ok:
+                    return False, f"发送文本失败: {flush_err}", spark_count, fallback_spark_used
+                pending_text = []
+                time.sleep(random.uniform(0.4, 0.8))
+
+            ok, reason, used_fallback = self._send_spark_sticker(
+                page, input_box, send_receipt
+            )
+            if not ok:
+                return False, f"发送火花表情失败: {reason}", spark_count, fallback_spark_used
+            spark_count += 1
+            fallback_spark_used = fallback_spark_used or used_fallback
+
+        if pending_text:
+            text_content = "".join(pending_text)
+            flush_ok, flush_err = self._flush_text_message(
+                page, input_box, text_content, send_receipt
+            )
+            if not flush_ok:
+                return False, f"发送文本失败: {flush_err}", spark_count, fallback_spark_used
+
+        return True, "", spark_count, fallback_spark_used
 
     def _send_spark_sticker(
         self, page: Page, input_box: Locator, send_receipt: dict[str, Any]
@@ -698,7 +950,7 @@ class ExecutionService:
 
         # 持久化 Browser Profile 目录（保留 LocalStorage、IndexedDB、设备指纹私钥）
         acc_id = getattr(account, "id", None) or "default"
-        profile_dir = PROFILE_ROOT_DIR / f"account_{acc_id}"
+        profile_dir = get_profile_root_dir() / f"account_{acc_id}"
         profile_dir.mkdir(parents=True, exist_ok=True)
 
         browser_args = [
@@ -745,6 +997,10 @@ class ExecutionService:
                 **launch_kwargs,
             )
             context.add_init_script(PLAYWRIGHT_STEALTH_SCRIPT)
+            try:
+                context.clear_cookies()
+            except Exception:
+                pass
             context.add_cookies(cookies)
 
             page = context.pages[0] if context.pages else context.new_page()
@@ -754,10 +1010,33 @@ class ExecutionService:
             def _handle_response(resp: Response) -> None:
                 try:
                     url = resp.url
-                    if resp.request.method.upper() == "POST" and any(k in url for k in ("/v1/message/send", "/send/msg/", "/web/im/send/msg/", "/message/send")):
+                    path = urlparse(url).path.lower()
+                    if resp.request.method.upper() == "POST" and any(
+                        marker in path
+                        for marker in (
+                            "/v1/message/send",
+                            "/message/send",
+                            "/send/msg",
+                            "/im/send",
+                            "/send_message",
+                            "/sendmsg",
+                            "/chat/send",
+                        )
+                    ):
                         if resp.status == 200:
                             data = resp.json()
-                            status_code = data.get("status_code", data.get("err_no", data.get("code")))
+                            if not isinstance(data, dict):
+                                return
+                            payloads = [data]
+                            if isinstance(data, dict) and isinstance(data.get("data"), dict):
+                                payloads.append(data["data"])
+                            status_code = None
+                            status_payload: dict[str, Any] = {}
+                            for payload in payloads:
+                                status_code = payload.get("status_code", payload.get("err_no", payload.get("code")))
+                                if status_code is not None:
+                                    status_payload = payload
+                                    break
                             if status_code in (0, "0"):
                                 send_receipt["seen"] = True
                                 send_receipt["ok"] = True
@@ -766,12 +1045,16 @@ class ExecutionService:
                                 send_receipt["seen"] = True
                                 send_receipt["ok"] = False
                                 send_receipt["status_code"] = status_code
-                                msg = data.get("status_msg") or data.get("message") or f"状态码: {status_code}"
+                                msg = status_payload.get("status_msg") or status_payload.get("message") or f"状态码: {status_code}"
                                 send_receipt["error"] = str(msg)
                 except Exception:
                     pass
 
-            page.on("response", _handle_response)
+            def _attach_response_listener(candidate_page: Page) -> None:
+                candidate_page.on("response", _handle_response)
+
+            _attach_response_listener(page)
+            context.on("page", _attach_response_listener)
 
             try:
                 target_name = friend.friend_nickname
@@ -785,7 +1068,16 @@ class ExecutionService:
 
                 # 策略 1: 如果有 sec_uid，优先访问个人主页点击【私信】唤起对话
                 if target_sec_uid:
-                    opened = self._open_user_profile_and_chat(page, target_name, target_dy_id, target_sec_uid)
+                    profile_page = self._open_user_profile_and_chat(
+                        page,
+                        target_name,
+                        target_dy_id,
+                        target_sec_uid,
+                        context=context,
+                    )
+                    if profile_page is not None:
+                        active_page = profile_page
+                        opened = True
 
                 # 策略 2: 访问创作者中心私信互动中心
                 if not opened:
@@ -836,7 +1128,7 @@ class ExecutionService:
                                 page.evaluate("(el) => el.click()", friend_item.element_handle())
                             time.sleep(1.5)
                             opened = True
-                        elif self._find_input_box(page):
+                        elif self._find_input_box(page) and self._active_chat_mentions_target(page, target_name, target_dy_id, target_sec_uid):
                             opened = True
                     except Exception as e:
                         logger.warning("Consumer chat navigation failed: %s", e)
@@ -848,11 +1140,11 @@ class ExecutionService:
                         "检测到抖音页面提示未登录或弹出登录弹窗，Cookie 凭证已过期，请在【账号管理】重新更新 Cookie。",
                     )
 
-                if not opened and not self._find_input_box(active_page):
+                if not opened:
                     return ExecutionResult(
                         False,
                         "未找到好友",
-                        f"在主页私信与列表中均未定位到好友 {target_name} ({target_dy_id})，请确认该好友是否在互关列表中。",
+                        f"在主页私信与列表中均未确认打开好友 {target_name} ({target_dy_id}) 的会话，为避免误发到当前聊天，已停止发送。",
                     )
 
                 # 定位输入框
@@ -864,54 +1156,16 @@ class ExecutionService:
                         "无法定位到私信聊天输入框",
                     )
 
-                # 逐段发送文本与表情
-                segments = split_spark_content(content)
-                pending_text: list[str] = []
-                spark_count = 0
-                fallback_spark_used = False
-
-                for kind, value in segments:
-                    if kind == "text" and value:
-                        pending_text.append(value)
-                        try:
-                            input_box.click(timeout=1500)
-                        except Exception:
-                            pass
-                        for char in value:
-                            active_page.keyboard.type(char, delay=random.randint(20, 50))
-                    elif kind == "spark":
-                        if pending_text:
-                            text_content = "".join(pending_text)
-                            flush_ok, flush_err = self._flush_text_message(active_page, input_box, text_content, send_receipt)
-                            if not flush_ok:
-                                return ExecutionResult(
-                                    False,
-                                    "发送文本失败",
-                                    f"向 {target_name} 发送文本失败: {flush_err}",
-                                )
-                            pending_text = []
-                            time.sleep(random.uniform(0.4, 0.8))
-
-                        ok, reason, used_fallback = self._send_spark_sticker(active_page, input_box, send_receipt)
-                        if not ok:
-                            return ExecutionResult(
-                                False,
-                                "发送火花表情失败",
-                                reason,
-                            )
-                        spark_count += 1
-                        if used_fallback:
-                            fallback_spark_used = True
-
-                if pending_text:
-                    text_content = "".join(pending_text)
-                    flush_ok, flush_err = self._flush_text_message(active_page, input_box, text_content, send_receipt)
-                    if not flush_ok:
-                        return ExecutionResult(
-                            False,
-                            "发送文本失败",
-                            f"向 {target_name} 发送文本失败: {flush_err}",
-                        )
+                send_ok, send_error, spark_count, fallback_spark_used = self._send_content_segments(
+                    active_page, input_box, content, send_receipt
+                )
+                if not send_ok:
+                    failure_summary = (
+                        "发送火花表情失败"
+                        if send_error.startswith("发送火花表情失败")
+                        else "发送文本失败"
+                    )
+                    return ExecutionResult(False, failure_summary, f"向 {target_name} {send_error}")
 
                 evidence: list[str] = []
                 if spark_count > 0:
@@ -919,7 +1173,7 @@ class ExecutionService:
                         evidence.append(f"火花表情(已自动文字兜底)x{spark_count}")
                     else:
                         evidence.append(f"续火花表情x{spark_count}")
-                if len(segments) > spark_count:
+                if any(kind == "text" and value for kind, value in split_spark_content(content)):
                     evidence.append("文本内容已发出")
 
                 return ExecutionResult(
