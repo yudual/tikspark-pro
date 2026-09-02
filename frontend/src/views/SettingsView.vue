@@ -87,9 +87,9 @@ function handleSaveLocalToken() {
 async function handleCheckAllAccounts() {
   try {
     await ElMessageBox.confirm(
-      "该操作将使用无头浏览器静默访问抖音消息页与个人主页，主动校验所有账号的 Cookie 有效性，并抓取刷新最新会话凭证。是否继续？",
-      "全量凭证检测与保活",
-      { confirmButtonText: "立即开始", cancelButtonText: "取消", type: "info" }
+      "该操作只检查服务器中 Cookie 的格式和必要字段，不会访问抖音、不会刷新或回写会话。是否继续？",
+      "本地 Cookie 结构检查",
+      { confirmButtonText: "开始检查", cancelButtonText: "取消", type: "info" }
     );
   } catch {
     return;
@@ -101,7 +101,7 @@ async function handleCheckAllAccounts() {
     checkResults.value = results;
     checkResultsVisible.value = true;
     const healthyCount = results.filter((r) => r.status === "healthy").length;
-    ElMessage.success(`检测完成：共检测 ${results.length} 个账号，${healthyCount} 个状态正常。`);
+    ElMessage.success(`本地检查完成：共检查 ${results.length} 个账号，未从服务器登录抖音。`);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "检测账号失败");
   } finally {
@@ -272,7 +272,7 @@ onMounted(loadSettings);
             :loading="checkingAccounts"
             @click="handleCheckAllAccounts"
           >
-            ⚡ 一键全量检测所有账号凭证并保活
+            检查所有账号的 Cookie 本地结构
           </el-button>
         </div>
       </el-form>
@@ -337,10 +337,10 @@ onMounted(loadSettings);
       </div>
     </section>
 
-    <!-- 全量检测保活结果弹窗 -->
+    <!-- Cookie 本地结构检查结果弹窗 -->
     <el-dialog
       v-model="checkResultsVisible"
-      title="全量账号 Cookie 凭证检测与保活结果"
+      title="账号 Cookie 本地结构检查结果"
       width="720px"
     >
       <el-table :data="checkResults" style="width: 100%" stripe>

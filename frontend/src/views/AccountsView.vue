@@ -159,9 +159,9 @@ async function handleCheckSingleAccount(account: Account) {
     const res = await api.checkAccount(account.id);
     await loadAccounts();
     if (res.status === "healthy") {
-      ElMessage.success(`账号【${res.nickname}】凭证有效，已完成保活检测！`);
+      ElMessage.success(`账号【${res.nickname}】Cookie 本地结构检查完成，未从服务器登录抖音。`);
     } else {
-      ElMessage.warning(`账号【${res.nickname}】凭证异常：${res.status_reason}`);
+      ElMessage.info(`账号【${res.nickname}】：${res.status_reason}`);
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "检测账号失败");
@@ -176,7 +176,7 @@ async function handleCheckAllAccounts() {
     const results = await api.checkAllAccounts();
     await loadAccounts();
     const healthyCount = results.filter((r) => r.status === "healthy").length;
-    ElMessage.success(`全量检测完成：共检测 ${results.length} 个账号，${healthyCount} 个状态正常。`);
+    ElMessage.success(`本地检查完成：共检查 ${results.length} 个账号；未从服务器登录抖音。`);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "批量检测失败");
   } finally {
@@ -185,6 +185,15 @@ async function handleCheckAllAccounts() {
 }
 
 async function handleRefreshAccount(account: Account) {
+  try {
+    await ElMessageBox.confirm(
+      "同步资料会让阿里云服务器访问抖音，可能触发异地登录风控并影响电脑端会话。确定继续吗？",
+      "异地登录风险提示",
+      { confirmButtonText: "仍要同步", cancelButtonText: "取消", type: "warning" }
+    );
+  } catch {
+    return;
+  }
   refreshingAccount[account.id] = true;
   try {
     await api.refreshFriends(account.id);
@@ -205,7 +214,7 @@ async function submitImport() {
   importing.value = true;
   try {
     await api.importAccount(cookieText.value.trim());
-    ElMessage.success("账号已成功导入并同步好友");
+    ElMessage.success("Cookie 已保存；未从服务器登录抖音，也未自动同步好友");
     cookieText.value = "";
     importDialogVisible.value = false;
     await loadAccounts();
@@ -231,7 +240,7 @@ async function submitCookieUpdate() {
   updatingCookie.value = true;
   try {
     await api.updateAccountCookie(cookieUpdateAccount.value.id, cookieUpdateText.value.trim());
-    ElMessage.success("Cookie 已更新并保留原有配置");
+    ElMessage.success("Cookie 已原样更新并保留好友配置；未进行联网保活");
     cookieDialogVisible.value = false;
     cookieUpdateText.value = "";
     await loadAccounts();
@@ -309,6 +318,15 @@ async function loadFriends(accountId: number) {
 
 async function refreshFriends() {
   if (!currentAccount.value) return;
+  try {
+    await ElMessageBox.confirm(
+      "同步好友会让阿里云服务器访问抖音，可能触发异地登录风控并影响电脑端会话。确定继续吗？",
+      "异地登录风险提示",
+      { confirmButtonText: "仍要同步", cancelButtonText: "取消", type: "warning" }
+    );
+  } catch {
+    return;
+  }
   friendLoading.value = true;
   try {
     currentFriends.value = await api.refreshFriends(currentAccount.value.id);
@@ -532,11 +550,11 @@ onMounted(loadAccounts);
       <div class="section-head">
         <div>
           <h2>账号资产与凭证管理</h2>
-          <p class="section-subtitle">Cookie 凭证本地加密安全托管，自动执行时支持真人拟态与无感保活。</p>
+          <p class="section-subtitle">Cookie 凭证本地加密保存；仅在实际执行任务时使用，不进行云端联网保活。</p>
         </div>
         <div style="display: flex; gap: 10px; flex-wrap: wrap">
           <el-button type="primary" :icon="Plus" @click="importDialogVisible = true">导入新账号</el-button>
-          <el-button type="warning" plain :icon="Aim" :loading="checkingAll" @click="handleCheckAllAccounts">一键检测全部保活</el-button>
+          <el-button type="warning" plain :icon="Aim" :loading="checkingAll" @click="handleCheckAllAccounts">本地检查全部 Cookie</el-button>
           <el-button plain :icon="Refresh" :loading="loading" @click="manualRefresh">刷新列表</el-button>
         </div>
       </div>
@@ -598,7 +616,7 @@ onMounted(loadAccounts);
 
           <div class="account-actions">
             <el-button type="primary" plain size="small" @click="openFriendDialog(account)">管理好友</el-button>
-            <el-button type="success" plain size="small" :icon="Aim" :loading="checkingAccount[account.id]" @click="handleCheckSingleAccount(account)">检测保活</el-button>
+            <el-button type="success" plain size="small" :icon="Aim" :loading="checkingAccount[account.id]" @click="handleCheckSingleAccount(account)">本地检查</el-button>
             <el-button plain size="small" :loading="refreshingAccount[account.id]" @click="handleRefreshAccount(account)">同步资料</el-button>
             <el-button plain size="small" :icon="Key" @click="openCookieDialog(account)">更新凭证</el-button>
             <el-button plain size="small" :icon="Edit" @click="openEditDialog(account)">编辑</el-button>
@@ -688,7 +706,7 @@ onMounted(loadAccounts);
           >
             批量删除 ({{ selectedFriendIds.length }})
           </el-button>
-          <el-button size="small" type="primary" plain :loading="friendLoading" :icon="Refresh" @click="refreshFriends">同步全量关注与好友</el-button>
+          <el-button size="small" type="primary" plain :loading="friendLoading" :icon="Refresh" @click="refreshFriends">同步好友（有异地风险）</el-button>
         </div>
       </div>
 

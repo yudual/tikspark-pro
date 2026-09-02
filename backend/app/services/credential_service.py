@@ -23,7 +23,7 @@ from ..schemas import (
 )
 from ..time_utils import beijing_now, from_beijing_epoch
 from .app_settings_service import get_default_schedule_window
-from .execution_service import CREATOR_CHAT_URL, PLAYWRIGHT_STEALTH_SCRIPT, get_profile_root_dir
+from .execution_service import PLAYWRIGHT_STEALTH_SCRIPT, get_profile_root_dir
 from .schedule_service import compute_friend_next_run_at, get_local_now, validate_schedule_window
 from .secret_service import get_secret_service
 
@@ -109,80 +109,50 @@ class CredentialService:
         return ParsedCredential(dy_id=dy_id, uid=uid)
 
     def import_account(self, db: Session, cookie_text: str) -> Account:
+        """只保存用户导出的 Cookie，不从云服务器主动访问抖音。"""
         clean_cookie = self.normalize_cookie_storage(cookie_text)
-        # The account does not have a database id until after the initial sync.
-        sync_result = self._extract_from_cookie(clean_cookie, None)
         parsed = self.parse_cookie_text(clean_cookie)
-        account_candidate = sync_result.account_candidate
-        friends = self._without_account_candidate(sync_result.friends, account_candidate)
-        final_cookie_text = clean_cookie
-        cookie_expires_at = self.extract_cookie_expires_at(final_cookie_text)
         now = beijing_now()
-
-        final_display_id = (
-            account_candidate.display_id
-            if account_candidate and account_candidate.display_id
-            else parsed.dy_id
-        )
-        if final_display_id and (len(final_display_id) > 30 or final_display_id.startswith("MS4w")):
-            final_display_id = parsed.uid or "已托管账号"
+        display_id = parsed.dy_id
+        if display_id and (len(display_id) > 30 or display_id.startswith("MS4w")):
+            display_id = parsed.uid or "已托管账号"
 
         account = Account(
-            nickname=(
-                account_candidate.nickname
-                if account_candidate and account_candidate.nickname
-                else "抖音账号"
-            ),
-            dy_id=final_display_id,
-            avatar_url=(
-                account_candidate.avatar_url
-                if account_candidate and account_candidate.avatar_url
-                else ""
-            ),
-            cookie_text=get_secret_service().encrypt(final_cookie_text),
-            status=sync_result.status,
-            status_reason=sync_result.status_reason,
-            last_checked_at=now,
-            cookie_expires_at=cookie_expires_at,
+            nickname="抖音账号",
+            dy_id=display_id,
+            avatar_url="",
+            cookie_text=get_secret_service().encrypt(clean_cookie),
+            status=AccountStatus.unknown,
+            status_reason="Cookie 已原样保存；未从阿里云主动登录抖音，避免影响电脑端会话。",
+            last_checked_at=None,
+            cookie_expires_at=self.extract_cookie_expires_at(clean_cookie),
             cookie_updated_at=now,
         )
         db.add(account)
         db.flush()
-        self._sync_friends_to_db(db, account, friends)
         return account
 
     def update_account_cookie(self, db: Session, account: Account, cookie_text: str) -> list[Friend]:
-        _clear_account_profile(getattr(account, 'id', None))
+        """原样替换凭证，但不在更新阶段登录抖音或同步好友。"""
         clean_cookie = self.normalize_cookie_storage(cookie_text)
-        sync_result = self._extract_from_cookie(clean_cookie, getattr(account, 'id', None))
         parsed = self.parse_cookie_text(clean_cookie)
-        friends = list(sync_result.friends)
-        account_candidate = sync_result.account_candidate
+        _clear_account_profile(getattr(account, "id", None))
 
-        if account_candidate is None:
-            account_candidate = self._find_self_candidate(account, friends, parsed)
-        friends = self._without_account_candidate(friends, account_candidate)
-
-        if account_candidate:
-            account.nickname = account_candidate.nickname or account.nickname
-            account.dy_id = account_candidate.display_id or account.dy_id
-            account.avatar_url = account_candidate.avatar_url or account.avatar_url
-        elif parsed.dy_id and not account.dy_id:
+        account.cookie_text = get_secret_service().encrypt(clean_cookie)
+        account.cookie_expires_at = self.extract_cookie_expires_at(clean_cookie)
+        account.cookie_updated_at = beijing_now()
+        account.last_checked_at = None
+        account.status = AccountStatus.unknown
+        account.status_reason = "Cookie 已更新但未从阿里云主动验证；将在实际发送时仅使用一次。"
+        if parsed.dy_id and not account.dy_id:
             account.dy_id = parsed.dy_id
 
-        final_cookie_text = clean_cookie
-        now = beijing_now()
-        account.cookie_text = get_secret_service().encrypt(final_cookie_text)
-        account.cookie_expires_at = self.extract_cookie_expires_at(final_cookie_text)
-        account.cookie_updated_at = now
-        account.status = sync_result.status
-        account.status_reason = (
-            f"已同步 {len(friends)} 位关注与互关好友。"
-            if friends and sync_result.status != AccountStatus.invalid
-            else sync_result.status_reason
+        db.flush()
+        return (
+            db.query(Friend)
+            .filter(Friend.account_id == account.id)
+            .all()
         )
-        account.last_checked_at = now
-        return self._sync_friends_to_db(db, account, friends)
 
     def extract_cookie_expires_at(self, cookie_text: str) -> datetime | None:
         parsed_json = self._try_parse_cookie_json(cookie_text)
@@ -197,7 +167,7 @@ class CredentialService:
             name = str(item.get("name", "")).strip()
             if name and name not in session_cookie_names:
                 continue
-            expires = item.get("expires")
+            expires = item.get("expires", item.get("expirationDate"))
             if not isinstance(expires, (int, float)) or expires <= 0:
                 continue
             try:
@@ -240,40 +210,26 @@ class CredentialService:
         return self._sync_friends_to_db(db, account, friends)
 
     def check_account_status(self, db: Session, account: Account) -> AccountCheckResult:
-        """主动检测并保活单个账号的 Cookie。"""
+        """仅做本地结构检查，不再以“保活”为名从云服务器登录抖音。"""
         if not account.cookie_text:
             account.status = AccountStatus.invalid
             account.status_reason = "缺少 Cookie 凭证"
-            db.commit()
-            return AccountCheckResult(
-                account_id=account.id,
-                nickname=account.nickname,
-                dy_id=account.dy_id,
-                status=account.status,
-                status_reason=account.status_reason,
-                cookie_expires_at=account.cookie_expires_at,
-                cookie_updated_at=account.cookie_updated_at,
-                friends_count=len(account.friends),
-            )
-
-        cookie_text = get_secret_service().decrypt(account.cookie_text)
-        sync_result = self._extract_from_cookie(cookie_text, getattr(account, 'id', None))
-        account.status = sync_result.status
-        account.status_reason = sync_result.status_reason
+        else:
+            try:
+                cookie_text = get_secret_service().decrypt(account.cookie_text)
+                cookies = self._to_playwright_cookies(cookie_text)
+                names = {str(item.get("name") or "") for item in cookies}
+                has_session = bool(names & {"sessionid", "sessionid_ss", "sid_guard", "sid_tt"})
+                if has_session:
+                    account.status = AccountStatus.unknown
+                    account.status_reason = "Cookie 本地结构完整；为避免电脑端掉登录，未从阿里云联网验证。"
+                else:
+                    account.status = AccountStatus.invalid
+                    account.status_reason = "Cookie 中缺少抖音会话字段，请重新导出完整 Cookie。"
+            except (ValueError, json.JSONDecodeError):
+                account.status = AccountStatus.invalid
+                account.status_reason = "Cookie 无法解析，请重新导出完整 Cookie。"
         account.last_checked_at = beijing_now()
-
-        # 后台同步绝不篡改用户原始 Cookie
-        pass
-
-        if sync_result.account_candidate:
-            account.nickname = sync_result.account_candidate.nickname or account.nickname
-            account.avatar_url = sync_result.account_candidate.avatar_url or account.avatar_url
-            if sync_result.account_candidate.display_id and not sync_result.account_candidate.display_id.startswith("MS4w"):
-                account.dy_id = sync_result.account_candidate.display_id
-
-        if sync_result.friends:
-            self._sync_friends_to_db(db, account, sync_result.friends)
-
         db.commit()
         db.refresh(account)
         return AccountCheckResult(
@@ -288,7 +244,7 @@ class CredentialService:
         )
 
     def check_all_accounts(self, db: Session) -> list[AccountCheckResult]:
-        """批量检测并保活所有托管账号。"""
+        """批量执行本地 Cookie 结构检查，不访问抖音。"""
         accounts = db.execute(select(Account).options(selectinload(Account.friends))).scalars().all()
         results: list[AccountCheckResult] = []
         for account in accounts:
@@ -620,42 +576,6 @@ class CredentialService:
                     page.wait_for_timeout(3000)
                     self._dismiss_non_login_dialogs(page)
 
-                # 自动续火花实际使用的是创作者平台私信。消费端页面能打开，
-                # 不代表 creator.douyin.com 仍然登录；必须单独验证，避免把错误 Cookie 标为 healthy。
-                creator_login_failed = False
-                creator_check_error = ""
-                try:
-                    page.goto(CREATOR_CHAT_URL, timeout=50000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(3000)
-                    self._dismiss_non_login_dialogs(page)
-                    if exec_svc._is_captcha_page(page):
-                        exec_svc._try_solve_slider_captcha(page)
-                        page.wait_for_timeout(3000)
-                        self._dismiss_non_login_dialogs(page)
-                    creator_login_failed = exec_svc._check_login_required(page)
-                    if not creator_login_failed:
-                        creator_probe = page.evaluate(
-                            """() => {
-                                const body = (document.body?.innerText || '').trim();
-                                const loginMarkers = ['扫码登录', '验证码登录', '登录/注册', '密码登录', '请先登录', '未登录'];
-                                return {
-                                    url: location.href,
-                                    title: document.title || '',
-                                    hasLoginMarker: loginMarkers.some((marker) => body.includes(marker)),
-                                    hasCreatorApp: !!document.querySelector('#sub-app'),
-                                };
-                            }"""
-                        )
-                        creator_login_failed = bool(creator_probe.get("hasLoginMarker"))
-                except Exception as exc:
-                    creator_login_failed = True
-                    creator_check_error = f"创作者平台登录状态检查失败: {exc}"
-
-                # 回到消费端读取关系链；创作者平台检查只负责判定凭证能否用于发私信。
-                page.goto("https://www.douyin.com/user/self", timeout=50000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
-                self._dismiss_non_login_dialogs(page)
-
                 extracted_data = page.evaluate(
                     """async () => {
                     // 1. 获取专属 IM 互关关系链 (仅互关好友与火花好友)
@@ -699,10 +619,6 @@ class CredentialService:
                     };
                 }"""
                 )
-                if isinstance(extracted_data, dict):
-                    extracted_data["creatorLoginFailed"] = creator_login_failed
-                    extracted_data["creatorCheckError"] = creator_check_error
-
                 self_acc = extracted_data.get("selfAccount", {})
                 self_uid = str(self_acc.get("uid") or parsed.uid or "self").strip()
                 self_dy_id = str(self_acc.get("display_id") or parsed.dy_id or "").strip()
@@ -772,52 +688,17 @@ class CredentialService:
                 context.close()
 
         is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else True
-        creator_login_failed = extracted_data.get("creatorLoginFailed", True) if isinstance(extracted_data, dict) else True
-        creator_check_error = str(extracted_data.get("creatorCheckError") or "").strip() if isinstance(extracted_data, dict) else ""
         refreshed_cookies = None
 
         account_candidate = self._pick_account_candidate(candidates, parsed)
         friends = self._pick_friend_candidates(candidates, account_candidate, parsed)
-        return self._build_sync_result(
-            account_candidate=account_candidate,
-            friends=friends,
-            is_login_failed=bool(is_login_failed),
-            creator_login_failed=bool(creator_login_failed),
-            creator_check_error=creator_check_error,
-            refreshed_cookies=refreshed_cookies,
-        )
 
-    def _build_sync_result(
-        self,
-        *,
-        account_candidate: UserCandidate | None,
-        friends: list[UserCandidate],
-        is_login_failed: bool,
-        creator_login_failed: bool,
-        creator_check_error: str = "",
-        refreshed_cookies: str | None = None,
-    ) -> SyncResult:
-        """根据消费端与创作者平台的双重登录检查生成同步结果。"""
         if is_login_failed or (account_candidate is None and not friends):
             return SyncResult(
                 account_candidate=account_candidate,
                 friends=[],
                 status=AccountStatus.invalid,
                 status_reason="Cookie 凭证已过期或登录态已失效，请重新在电脑端登录抖音并复制最新 Cookie。",
-                refreshed_cookies=refreshed_cookies,
-            )
-
-        if creator_login_failed:
-            creator_reason = (
-                "Cookie 无法登录抖音创作者平台私信"
-                + (f"（{creator_check_error}）" if creator_check_error else "")
-                + "，请从已登录的 creator.douyin.com 页面重新复制 Cookie。"
-            )
-            return SyncResult(
-                account_candidate=account_candidate,
-                friends=friends,
-                status=AccountStatus.invalid,
-                status_reason=creator_reason,
                 refreshed_cookies=refreshed_cookies,
             )
 
@@ -1032,17 +913,18 @@ class CredentialService:
                 if not name or not value:
                     continue
                 cookie: dict[str, Any] = {"name": name, "value": value}
+                # Cookie 插件导出的 domain/path 不能统一改成 .douyin.com 和 /：
+                # creator.douyin.com、www.douyin.com 及 passport 相关 Cookie 可能有不同作用域，
+                # 改写后会造成 Cookie 污染、覆盖或无法恢复创作者平台登录态。
                 domain = str(item.get("domain", "")).strip()
-                if not domain or "douyin.com" in domain:
-                    cookie["domain"] = ".douyin.com"
-                else:
-                    cookie["domain"] = domain
-                cookie["path"] = "/"
+                cookie["domain"] = domain or ".douyin.com"
+                path = str(item.get("path", "/")).strip()
+                cookie["path"] = path or "/"
 
                 same_site = str(item.get("sameSite", "")).strip().lower()
                 if same_site in ("strict",):
                     cookie["sameSite"] = "Strict"
-                elif same_site in ("lax", "unspecified"):
+                elif same_site in ("lax",):
                     cookie["sameSite"] = "Lax"
                 elif same_site in ("none", "no_restriction"):
                     cookie["sameSite"] = "None"
@@ -1050,10 +932,12 @@ class CredentialService:
                 secure = item.get("secure")
                 if isinstance(secure, bool):
                     cookie["secure"] = secure
-                else:
-                    cookie["secure"] = True
+                http_only = item.get("httpOnly")
+                if isinstance(http_only, bool):
+                    cookie["httpOnly"] = http_only
 
-                expires = item.get("expires")
+                # Cookie-Editor 等插件通常使用 expirationDate；Playwright 使用 expires。
+                expires = item.get("expires", item.get("expirationDate"))
                 if isinstance(expires, (int, float)) and expires > 0:
                     cookie["expires"] = expires
                 cookies.append(cookie)

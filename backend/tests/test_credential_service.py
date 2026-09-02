@@ -163,7 +163,7 @@ class CredentialServiceTests(unittest.TestCase):
         cookies_json = self.service._to_playwright_cookies(json_array)
         self.assertEqual(len(cookies_json), 2)
         self.assertEqual(cookies_json[0]["sameSite"], "None")
-        self.assertEqual(cookies_json[0]["domain"], ".douyin.com")
+        self.assertEqual(cookies_json[0]["domain"], "www.douyin.com")
 
     def test_batch_import_friends(self):
         from backend.app.schemas import FriendBatchImportRequest
