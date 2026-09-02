@@ -23,7 +23,7 @@ from ..schemas import (
 )
 from ..time_utils import beijing_now, from_beijing_epoch
 from .app_settings_service import get_default_schedule_window
-from .execution_service import PLAYWRIGHT_STEALTH_SCRIPT, get_profile_root_dir
+from .execution_service import CREATOR_CHAT_URL, PLAYWRIGHT_STEALTH_SCRIPT, get_profile_root_dir
 from .schedule_service import compute_friend_next_run_at, get_local_now, validate_schedule_window
 from .secret_service import get_secret_service
 
@@ -178,7 +178,7 @@ class CredentialService:
         account.status = sync_result.status
         account.status_reason = (
             f"已同步 {len(friends)} 位关注与互关好友。"
-            if friends
+            if friends and sync_result.status != AccountStatus.invalid
             else sync_result.status_reason
         )
         account.last_checked_at = now
@@ -233,7 +233,7 @@ class CredentialService:
         account.status = sync_result.status
         account.status_reason = (
             f"已同步 {len(friends)} 位关注与互关好友。"
-            if friends
+            if friends and sync_result.status != AccountStatus.invalid
             else sync_result.status_reason
         )
         account.last_checked_at = beijing_now()
@@ -620,6 +620,42 @@ class CredentialService:
                     page.wait_for_timeout(3000)
                     self._dismiss_non_login_dialogs(page)
 
+                # 自动续火花实际使用的是创作者平台私信。消费端页面能打开，
+                # 不代表 creator.douyin.com 仍然登录；必须单独验证，避免把错误 Cookie 标为 healthy。
+                creator_login_failed = False
+                creator_check_error = ""
+                try:
+                    page.goto(CREATOR_CHAT_URL, timeout=50000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(3000)
+                    self._dismiss_non_login_dialogs(page)
+                    if exec_svc._is_captcha_page(page):
+                        exec_svc._try_solve_slider_captcha(page)
+                        page.wait_for_timeout(3000)
+                        self._dismiss_non_login_dialogs(page)
+                    creator_login_failed = exec_svc._check_login_required(page)
+                    if not creator_login_failed:
+                        creator_probe = page.evaluate(
+                            """() => {
+                                const body = (document.body?.innerText || '').trim();
+                                const loginMarkers = ['扫码登录', '验证码登录', '登录/注册', '密码登录', '请先登录', '未登录'];
+                                return {
+                                    url: location.href,
+                                    title: document.title || '',
+                                    hasLoginMarker: loginMarkers.some((marker) => body.includes(marker)),
+                                    hasCreatorApp: !!document.querySelector('#sub-app'),
+                                };
+                            }"""
+                        )
+                        creator_login_failed = bool(creator_probe.get("hasLoginMarker"))
+                except Exception as exc:
+                    creator_login_failed = True
+                    creator_check_error = f"创作者平台登录状态检查失败: {exc}"
+
+                # 回到消费端读取关系链；创作者平台检查只负责判定凭证能否用于发私信。
+                page.goto("https://www.douyin.com/user/self", timeout=50000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+                self._dismiss_non_login_dialogs(page)
+
                 extracted_data = page.evaluate(
                     """async () => {
                     // 1. 获取专属 IM 互关关系链 (仅互关好友与火花好友)
@@ -663,6 +699,9 @@ class CredentialService:
                     };
                 }"""
                 )
+                if isinstance(extracted_data, dict):
+                    extracted_data["creatorLoginFailed"] = creator_login_failed
+                    extracted_data["creatorCheckError"] = creator_check_error
 
                 self_acc = extracted_data.get("selfAccount", {})
                 self_uid = str(self_acc.get("uid") or parsed.uid or "self").strip()
@@ -732,18 +771,53 @@ class CredentialService:
             finally:
                 context.close()
 
-        is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else False
+        is_login_failed = extracted_data.get("isLoginFailed", False) if isinstance(extracted_data, dict) else True
+        creator_login_failed = extracted_data.get("creatorLoginFailed", True) if isinstance(extracted_data, dict) else True
+        creator_check_error = str(extracted_data.get("creatorCheckError") or "").strip() if isinstance(extracted_data, dict) else ""
         refreshed_cookies = None
 
         account_candidate = self._pick_account_candidate(candidates, parsed)
         friends = self._pick_friend_candidates(candidates, account_candidate, parsed)
+        return self._build_sync_result(
+            account_candidate=account_candidate,
+            friends=friends,
+            is_login_failed=bool(is_login_failed),
+            creator_login_failed=bool(creator_login_failed),
+            creator_check_error=creator_check_error,
+            refreshed_cookies=refreshed_cookies,
+        )
 
+    def _build_sync_result(
+        self,
+        *,
+        account_candidate: UserCandidate | None,
+        friends: list[UserCandidate],
+        is_login_failed: bool,
+        creator_login_failed: bool,
+        creator_check_error: str = "",
+        refreshed_cookies: str | None = None,
+    ) -> SyncResult:
+        """根据消费端与创作者平台的双重登录检查生成同步结果。"""
         if is_login_failed or (account_candidate is None and not friends):
             return SyncResult(
                 account_candidate=account_candidate,
                 friends=[],
                 status=AccountStatus.invalid,
                 status_reason="Cookie 凭证已过期或登录态已失效，请重新在电脑端登录抖音并复制最新 Cookie。",
+                refreshed_cookies=refreshed_cookies,
+            )
+
+        if creator_login_failed:
+            creator_reason = (
+                "Cookie 无法登录抖音创作者平台私信"
+                + (f"（{creator_check_error}）" if creator_check_error else "")
+                + "，请从已登录的 creator.douyin.com 页面重新复制 Cookie。"
+            )
+            return SyncResult(
+                account_candidate=account_candidate,
+                friends=friends,
+                status=AccountStatus.invalid,
+                status_reason=creator_reason,
                 refreshed_cookies=refreshed_cookies,
             )
 
